@@ -10,7 +10,7 @@ app = Flask(__name__)
 # APPSHEET CONFIG
 # =========================
 APP_ID = "5ebec09a-62dd-4fa9-8f14-830fb104518f"
-ACCESS_KEY = "YOUR_ACCESS_KEY"
+ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
 TABLE_NAME = "Data TFR"
 
 
