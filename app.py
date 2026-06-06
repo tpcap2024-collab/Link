@@ -7,7 +7,7 @@ import traceback
 app = Flask(__name__)
 
 # =========================
-# APP SETTINGS
+# APPSHEET CONFIG
 # =========================
 APP_ID = "5ebec09a-62dd-4fa9-8f14-830fb104518f"
 ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
@@ -16,7 +16,7 @@ TABLE_NAME = "Data TFR"
 # =========================
 # UPDATE APPSHEET
 # =========================
-def update_appsheet(key_id, volume):
+def update_appsheet(row_id, volume):
 
     url = f"https://api.appsheet.com/api/v2/apps/{APP_ID}/tables/{TABLE_NAME}/Action"
 
@@ -29,7 +29,7 @@ def update_appsheet(key_id, volume):
         "Action": "Edit",
         "Rows": [
             {
-                "KeyID": key_id,     # 👈 KEY หลักใหม่
+                "id": row_id,        # 👈 KEY = AppSheet UNIQUEID column
                 "TFR AI": volume
             }
         ]
@@ -52,7 +52,7 @@ def home():
 
 
 # =========================
-# PREDICT API
+# MAIN API
 # =========================
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -66,12 +66,12 @@ def predict():
             return jsonify({"status": "error", "message": "No JSON"}), 400
 
         image_url = data.get("link")
-        key_id = data.get("KeyID") or data.get("keyid")
+        row_id = data.get("id")   # 👈 ใช้ AppSheet UNIQUEID
 
         print("IMAGE URL:", image_url)
-        print("KEY ID:", key_id)
+        print("ROW ID:", row_id)
 
-        if not image_url or not key_id:
+        if not image_url or not row_id:
             return jsonify({"status": "error", "message": "missing data"}), 400
 
         # =========================
@@ -102,35 +102,32 @@ def predict():
         img = cv2.resize(img, (800, 600))
 
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        hsv = cv2.GaussianBlur(hsv, (5,5), 0)
+        hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
 
-        mask = cv2.inRange(hsv, (10,30,60), (45,255,255))
+        mask = cv2.inRange(hsv, (10, 30, 60), (45, 255, 255))
 
         red = cv2.bitwise_or(
-            cv2.inRange(hsv, (0,70,50), (10,255,255)),
-            cv2.inRange(hsv, (160,70,50), (180,255,255))
+            cv2.inRange(hsv, (0, 70, 50), (10, 255, 255)),
+            cv2.inRange(hsv, (160, 70, 50), (180, 255, 255))
         )
 
-        blue = cv2.inRange(hsv, (90,50,50), (130,255,255))
-        green = cv2.inRange(hsv, (40,40,40), (80,255,255))
-        white = cv2.inRange(hsv, (0,0,160), (180,70,255))
+        blue = cv2.inRange(hsv, (90, 50, 50), (130, 255, 255))
+        green = cv2.inRange(hsv, (40, 40, 40), (80, 255, 255))
+        white = cv2.inRange(hsv, (0, 0, 160), (180, 70, 255))
 
         combined = mask | red | blue | green | white
 
         h, w = combined.shape
 
-        # ROI
         roi = combined[int(h*0.18):int(h*0.80), int(w*0.05):int(w*0.95)]
 
-        # remove ceiling noise
         roi[:int(roi.shape[0]*0.12), :] = 0
 
-        # clean
         roi = cv2.morphologyEx(roi, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
         roi = cv2.dilate(roi, np.ones((7,7), np.uint8), 1)
 
         # =========================
-        # VOLUME CALCULATION
+        # VOLUME
         # =========================
         fill = cv2.countNonZero(roi)
         total = roi.size
@@ -145,11 +142,11 @@ def predict():
         # =========================
         # UPDATE APPSHEET
         # =========================
-        update_appsheet(key_id, volume)
+        update_appsheet(row_id, volume)
 
         return jsonify({
             "status": "success",
-            "KeyID": key_id,
+            "id": row_id,
             "volume": volume
         })
 
