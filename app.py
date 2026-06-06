@@ -132,12 +132,12 @@ def predict():
         fill = cv2.countNonZero(roi)
         total = roi.size
 
-        volume = int((fill / total) * 100)
+        volume_percent = int((fill / total) * 100)
 
-        if volume >= 85:
-            volume = 100
+        if volume_percent >= 85:
+        volume_percent = 100
 
-        print("VOLUME:", volume)
+        volume_text = f"{volume_percent}%"
 
         # =========================
         # UPDATE APPSHEET
