@@ -6,11 +6,56 @@ import traceback
 
 app = Flask(__name__)
 
+# =========================
+# APP SETTINGS (ใส่ของคุณตรงนี้)
+# =========================
+APP_ID = "5ebec09a-62dd-4fa9-8f14-830fb104518f"
+ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
+TABLE_NAME = "Data TFR"
+
+# =========================
+# UPDATE APP SHEET FUNCTION
+# =========================
+def update_appsheet(row_id, volume, height):
+
+    try:
+        url = f"https://api.appsheet.com/api/v2/apps/{APP_ID}/tables/{TABLE_NAME}/Action"
+
+        headers = {
+            "ApplicationAccessKey": ACCESS_KEY,
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "Action": "Edit",
+            "Properties": {},
+            "Rows": [
+                {
+                    "ID": row_id,          # KEY column
+                    "TFR AI": volume,      # column M
+                }
+            ]
+        }
+
+        r = requests.post(url, json=payload, headers=headers)
+
+        print("APP SHEET UPDATE:", r.status_code, r.text)
+
+    except Exception as e:
+        print("UPDATE ERROR:", str(e))
+
+
+# =========================
+# HOME
+# =========================
 @app.route("/")
 def home():
     return "TFR AI Running"
 
 
+# =========================
+# MAIN PREDICT API
+# =========================
 @app.route("/predict", methods=["POST"])
 def predict():
 
@@ -25,14 +70,17 @@ def predict():
             return jsonify({"status": "error", "message": "No JSON"}), 400
 
         image_url = data.get("link")
+        row_id = data.get("id")
+
         print("IMAGE URL:", image_url)
+        print("ROW ID:", row_id)
 
-        if not image_url:
-            return jsonify({"status": "error", "message": "link empty"}), 400
+        if not image_url or not row_id:
+            return jsonify({"status": "error", "message": "missing data"}), 400
 
-        # ==============================
+        # =========================
         # DOWNLOAD IMAGE
-        # ==============================
+        # =========================
         response = requests.get(
             image_url,
             timeout=60,
@@ -41,10 +89,7 @@ def predict():
         )
 
         if response.status_code != 200:
-            return jsonify({
-                "status": "error",
-                "message": f"download failed {response.status_code}"
-            }), 400
+            return jsonify({"status": "error", "message": "download failed"}), 400
 
         img_array = np.frombuffer(response.content, np.uint8)
         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
@@ -54,183 +99,89 @@ def predict():
 
         print("IMAGE OK")
 
-        # ==============================
-        # RESIZE (เหมือน Colab)
-        # ==============================
+        # =========================
+        # RESIZE
+        # =========================
         img_resized = cv2.resize(img, (800, 600))
+
         h, w = img_resized.shape[:2]
 
-        # ==============================
-        # HSV
-        # ==============================
+        # =========================
+        # HSV PROCESS
+        # =========================
         hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
         hsv = cv2.GaussianBlur(hsv, (5,5), 0)
 
-        # ==============================
-        # COLOR RANGE (Colab)
-        # ==============================
-        lower_egg = np.array([10, 30, 60])
-        upper_egg = np.array([45, 255, 255])
-
-        lower_red1 = np.array([0, 70, 50])
-        upper_red1 = np.array([10, 255, 255])
-
-        lower_red2 = np.array([160, 70, 50])
-        upper_red2 = np.array([180, 255, 255])
-
-        lower_blue = np.array([90, 50, 50])
-        upper_blue = np.array([130, 255, 255])
-
-        lower_green = np.array([40, 40, 40])
-        upper_green = np.array([80, 255, 255])
-
-        lower_white = np.array([0, 0, 160])
-        upper_white = np.array([180, 70, 255])
-
-        lower_dark = np.array([0, 0, 0])
-        upper_dark = np.array([180, 255, 60])
-
-        # ==============================
-        # MASKS
-        # ==============================
-        mask_egg = cv2.inRange(hsv, lower_egg, upper_egg)
+        # =========================
+        # COLOR MASKS
+        # =========================
+        mask = cv2.inRange(hsv, np.array([10,30,60]), np.array([45,255,255]))
 
         mask_red = cv2.bitwise_or(
-            cv2.inRange(hsv, lower_red1, upper_red1),
-            cv2.inRange(hsv, lower_red2, upper_red2)
+            cv2.inRange(hsv, np.array([0,70,50]), np.array([10,255,255])),
+            cv2.inRange(hsv, np.array([160,70,50]), np.array([180,255,255]))
         )
 
-        mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
-        mask_green = cv2.inRange(hsv, lower_green, upper_green)
-        mask_white = cv2.inRange(hsv, lower_white, upper_white)
+        mask_blue = cv2.inRange(hsv, np.array([90,50,50]), np.array([130,255,255]))
+        mask_green = cv2.inRange(hsv, np.array([40,40,40]), np.array([80,255,255]))
+        mask_white = cv2.inRange(hsv, np.array([0,0,160]), np.array([180,70,255]))
 
-        # ==============================
-        # COMBINE
-        # ==============================
-        combined_mask = cv2.bitwise_or(
-            mask_egg,
-            cv2.bitwise_or(
-                mask_red,
-                cv2.bitwise_or(
-                    mask_blue,
-                    cv2.bitwise_or(mask_green, mask_white)
-                )
-            )
-        )
+        combined = cv2.bitwise_or(mask, mask_red)
+        combined = cv2.bitwise_or(combined, mask_blue)
+        combined = cv2.bitwise_or(combined, mask_green)
+        combined = cv2.bitwise_or(combined, mask_white)
 
-        # ==============================
-        # CLEAN DARK NOISE
-        # ==============================
-        gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-        texture_edges = cv2.Canny(gray, 50, 150)
-
-        mask_dark = cv2.inRange(hsv, lower_dark, upper_dark)
-        smooth_dark = cv2.bitwise_and(mask_dark, cv2.bitwise_not(texture_edges))
-
-        combined_mask = cv2.bitwise_and(
-            combined_mask,
-            cv2.bitwise_not(smooth_dark)
-        )
-
-        # ==============================
-        # ROI (สำคัญมาก)
-        # ==============================
+        # =========================
+        # ROI
+        # =========================
         x1 = int(w * 0.05)
         x2 = int(w * 0.95)
         y1 = int(h * 0.18)
         y2 = int(h * 0.80)
 
-        crop_mask = combined_mask[y1:y2, x1:x2]
+        roi = combined[y1:y2, x1:x2]
 
-        # ==============================
-        # REMOVE CEILING
-        # ==============================
-        ceiling_cut = int(crop_mask.shape[0] * 0.12)
-        crop_mask[0:ceiling_cut, :] = 0
+        # =========================
+        # CLEAN TOP AREA
+        # =========================
+        roi[:int(roi.shape[0]*0.12), :] = 0
 
-        # ==============================
-        # MORPHOLOGY CLEAN
-        # ==============================
-        kernel_open = np.ones((5,5), np.uint8)
-        crop_mask = cv2.morphologyEx(crop_mask, cv2.MORPH_OPEN, kernel_open)
+        # =========================
+        # MORPHOLOGY
+        # =========================
+        kernel = np.ones((5,5), np.uint8)
+        roi = cv2.morphologyEx(roi, cv2.MORPH_OPEN, kernel)
 
-        kernel = np.ones((7,7), np.uint8)
-        dilated = cv2.dilate(crop_mask, kernel, iterations=1)
+        roi = cv2.dilate(roi, np.ones((7,7), np.uint8), 1)
 
-        kernel_fill = cv2.getStructuringElement(cv2.MORPH_RECT, (25,9))
-        dilated = cv2.morphologyEx(dilated, cv2.MORPH_CLOSE, kernel_fill)
+        # =========================
+        # CALCULATE VOLUME
+        # =========================
+        fill_pixels = cv2.countNonZero(roi)
+        total_pixels = roi.shape[0] * roi.shape[1]
 
-        # ==============================
-        # CONNECTED COMPONENTS
-        # ==============================
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-            dilated, connectivity=8
-        )
+        volume_percent = int((fill_pixels / total_pixels) * 100)
 
-        clean_mask = np.zeros_like(dilated)
-
-        ground_threshold = int(dilated.shape[0] * 0.75)
-
-        total_object_area = 0
-        valid_y_coords = []
-
-        for label in range(1, num_labels):
-
-            x = stats[label, cv2.CC_STAT_LEFT]
-            y = stats[label, cv2.CC_STAT_TOP]
-            w_box = stats[label, cv2.CC_STAT_WIDTH]
-            h_box = stats[label, cv2.CC_STAT_HEIGHT]
-            area = stats[label, cv2.CC_STAT_AREA]
-
-            bottom_y = y + h_box
-
-            if area < 1500:
-                continue
-
-            if bottom_y < ground_threshold and area < 5000:
-                continue
-
-            if w_box < 20 and h_box > 150:
-                continue
-
-            clean_mask[labels == label] = 255
-            total_object_area += area
-            valid_y_coords.append(y)
-
-        dilated = clean_mask
-
-        # ==============================
-        # HEIGHT CALC
-        # ==============================
-        highest_point_y = crop_mask.shape[0]
-
-        if len(valid_y_coords) > 0:
-            highest_point_y = int(np.percentile(valid_y_coords, 15))
-
-        height_fill_rate = ((crop_mask.shape[0] - highest_point_y) / crop_mask.shape[0]) * 100
-        volume_percent = (total_object_area / (crop_mask.shape[0] * crop_mask.shape[1])) * 100
-
-        height_fill_rate = int(round(height_fill_rate / 5) * 5)
-        volume_percent = int(round(volume_percent / 5) * 5)
-
-        height_fill_rate = max(0, min(100, height_fill_rate))
-        volume_percent = max(0, min(100, volume_percent))
-
-        if height_fill_rate >= 85:
-            height_fill_rate = 100
         if volume_percent >= 85:
             volume_percent = 100
 
-        # ==============================
-        # RETURN RESULT
-        # ==============================
-        print("HEIGHT:", height_fill_rate)
         print("VOLUME:", volume_percent)
 
+        # =========================
+        # UPDATE APP SHEET (REALTIME)
+        # =========================
+        update_appsheet(
+            row_id=row_id,
+            volume=volume_percent,
+            height=0
+        )
+
+        # =========================
+        # RESPONSE
+        # =========================
         return jsonify({
             "status": "success",
-            "height_fill_rate": height_fill_rate,
-            "volume_percent": volume_percent
+            "volume": volume_percent
         })
 
     except Exception as e:
