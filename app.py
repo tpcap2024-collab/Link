@@ -16,7 +16,7 @@ ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
 TABLE_NAME = "Data TFR"
 
 # =========================
-# MEMORY LOCK
+# LOCK
 # =========================
 processed_ids = set()
 lock = threading.Lock()
@@ -32,17 +32,19 @@ def download_image(url):
         if r.status_code != 200:
             return None
 
-        return cv2.imdecode(
+        img = cv2.imdecode(
             np.frombuffer(r.content, np.uint8),
             cv2.IMREAD_COLOR
         )
+
+        return img
 
     except:
         return None
 
 
 # =========================
-# 🔥 AI CORE (FIXED VOLUME BOOST)
+# 🔥 FIXED VOLUME MODEL (HORIZONTAL SAFE)
 # =========================
 def gen_volume(img):
 
@@ -54,7 +56,7 @@ def gen_volume(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # =========================
-    # MASK (softened thresholds)
+    # COLOR MASK
     # =========================
     mask = (
         cv2.inRange(hsv, (10, 20, 50), (45, 255, 255)) |
@@ -64,57 +66,47 @@ def gen_volume(img):
         cv2.inRange(hsv, (35, 30, 30), (85, 255, 255))
     )
 
-    # =========================
-    # EDGE FILTER (lighter)
-    # =========================
+    # ลด edge noise
     edges = cv2.Canny(gray, 80, 160)
     mask = cv2.bitwise_and(mask, cv2.bitwise_not(edges))
 
-    # =========================
-    # DYNAMIC ROI (wider capture)
-    # =========================
-    projection = np.sum(mask, axis=1)
-    norm = projection / (np.max(projection) + 1e-6)
-
-    active = np.where(norm > 0.05)[0]
-
     h, w = mask.shape
 
-    if len(active) > 0:
-        top = int(np.percentile(active, 3))
-        bottom = int(np.percentile(active, 97))
-    else:
-        top = int(h * 0.15)
-        bottom = int(h * 0.85)
+    # =========================
+    # ROI (เปิดกว้างขึ้น + กันภาพเอียง)
+    # =========================
+    roi = mask[int(h*0.08):int(h*0.95), int(w*0.01):int(w*0.99)]
 
-    roi = mask[top:bottom, int(w * 0.02):int(w * 0.98)]
+    if roi.shape[0] == 0 or roi.shape[1] == 0:
+        return 0
 
     # =========================
-    # CLEAN (light)
+    # 1) AREA DENSITY (หลัก)
     # =========================
-    if roi.shape[0] > 10:
-        roi[:int(roi.shape[0] * 0.08), :] = 0
+    area_density = np.count_nonzero(roi) / roi.size
 
-    roi = cv2.morphologyEx(
-        roi,
-        cv2.MORPH_OPEN,
-        np.ones((3, 3), np.uint8)
+    # =========================
+    # 2) VERTICAL SIGNAL (soft)
+    # =========================
+    v_proj = np.sum(roi, axis=1)
+    v_norm = v_proj / (np.max(v_proj) + 1e-6)
+    v_score = np.mean(v_norm > 0.08)
+
+    # =========================
+    # 3) HORIZONTAL SIGNAL (แก้ภาพแนวนอน)
+    # =========================
+    h_proj = np.sum(roi, axis=0)
+    h_norm = h_proj / (np.max(h_proj) + 1e-6)
+    h_score = np.mean(h_norm > 0.08)
+
+    # =========================
+    # FINAL VOLUME (BALANCED 3 FACTORS)
+    # =========================
+    volume = (
+        area_density * 100 * 0.55 +
+        v_score * 100 * 0.25 +
+        h_score * 100 * 0.20
     )
-
-    # =========================
-    # RAW VOLUME
-    # =========================
-    fill = cv2.countNonZero(roi)
-    total = roi.size
-
-    raw_volume = (fill / total) * 100
-
-    # =========================
-    # 🔥 DENSITY BOOST FIX (แก้ volume ต่ำ)
-    # =========================
-    density = np.mean(roi > 0)
-
-    volume = raw_volume * (0.7 + density * 1.3)
 
     # =========================
     # NORMALIZE
@@ -154,10 +146,8 @@ def update_appsheet(row_id, volume_text):
     for _ in range(3):
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=30)
-
             if r.status_code == 200:
                 return True
-
         except:
             time.sleep(1)
 
@@ -183,7 +173,7 @@ def predict():
             return jsonify({"error": "missing data"}), 400
 
         # =========================
-        # LOCK (กันยิงซ้ำ)
+        # LOCK
         # =========================
         with lock:
             if row_id in processed_ids:
@@ -228,7 +218,7 @@ def predict():
 
 
 # =========================
-# RUN SERVER
+# RUN
 # =========================
 if __name__ == "__main__":
     app.run(
