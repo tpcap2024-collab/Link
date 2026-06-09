@@ -27,7 +27,7 @@ lock = threading.Lock()
 # =========================
 def download_image(url):
     try:
-        r = requests.get(url, timeout=60)
+        r = requests.get(url, timeout=15)
 
         if r.status_code != 200:
             return None
@@ -42,14 +42,14 @@ def download_image(url):
 
 
 # =========================
-# AI CORE (VOLUME ONLY)
+# 🔥 AI CORE (FAST VOLUME)
 # =========================
-def gen_volume_only(img):
+def gen_volume(img):
 
-    img = cv2.resize(img, (800, 600))
+    img = cv2.resize(img, (640, 480))
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
+    hsv = cv2.GaussianBlur(hsv, (3, 3), 0)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -61,7 +61,7 @@ def gen_volume_only(img):
         cv2.inRange(hsv, (40, 40, 40), (80, 255, 255))
     )
 
-    edges = cv2.Canny(gray, 50, 150)
+    edges = cv2.Canny(gray, 50, 120)
     mask = cv2.bitwise_and(mask, cv2.bitwise_not(edges))
 
     projection = np.sum(mask, axis=1)
@@ -81,10 +81,13 @@ def gen_volume_only(img):
     roi = mask[top:bottom, int(w * 0.03):int(w * 0.97)]
 
     if roi.shape[0] > 10:
-        roi[:int(roi.shape[0]*0.12), :] = 0
+        roi[:int(roi.shape[0] * 0.1), :] = 0
 
-    roi = cv2.morphologyEx(roi, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    roi = cv2.dilate(roi, np.ones((7, 7), np.uint8), 1)
+    roi = cv2.morphologyEx(
+        roi,
+        cv2.MORPH_OPEN,
+        np.ones((3, 3), np.uint8)
+    )
 
     fill = cv2.countNonZero(roi)
     total = roi.size
@@ -101,9 +104,9 @@ def gen_volume_only(img):
 
 
 # =========================
-# UPDATE APPSHEET (ส่งค่าเดียว)
+# UPDATE APPSHEET
 # =========================
-def update_appsheet(row_id, volume):
+def update_appsheet(row_id, volume_text):
 
     url = f"https://api.appsheet.com/api/v2/apps/{APP_ID}/tables/{TABLE_NAME}/Action"
 
@@ -117,7 +120,8 @@ def update_appsheet(row_id, volume):
         "Rows": [
             {
                 "id": row_id,
-                "TFR AI": f"{volume}%"   # 🔥 ส่งค่าเดียว
+                "TFR AI": volume_text,
+                "status": "Done"
             }
         ]
     }
@@ -153,30 +157,40 @@ def predict():
         if not image_url or not row_id:
             return jsonify({"error": "missing data"}), 400
 
-        # กันยิงซ้ำ
+        # =========================
+        # LOCK (กันยิงซ้ำ)
+        # =========================
         with lock:
             if row_id in processed_ids:
                 return jsonify({"status": "skipped"}), 200
             processed_ids.add(row_id)
 
-        time.sleep(2)
+        time.sleep(1)
 
+        # =========================
         # IMAGE
+        # =========================
         img = download_image(image_url)
 
         if img is None:
             return jsonify({"error": "image fail"}), 400
 
+        # =========================
         # AI
-        volume = gen_volume_only(img)
+        # =========================
+        volume = gen_volume(img)
         volume_text = f"{volume}%"
 
         print("VOLUME:", volume_text)
 
-        # 🔥 UPDATE APPSHEET (ส่งค่าเดียว)
-        update_appsheet(row_id, volume)
+        # =========================
+        # 🔥 UPDATE APPSHEET
+        # =========================
+        update_appsheet(row_id, volume_text)
 
-        # RETURN (ส่งแค่ volume)
+        # =========================
+        # RESPONSE
+        # =========================
         return jsonify({
             "status": "success",
             "id": row_id,
@@ -188,5 +202,12 @@ def predict():
         return jsonify({"error": "server error"}), 500
 
 
+# =========================
+# RUN SERVER
+# =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(
+        host="0.0.0.0",
+        port=10000,
+        threaded=True
+    )
