@@ -8,26 +8,159 @@ import threading
 
 app = Flask(__name__)
 
-APP_ID = "5ebec09a-62dd-4fa9-8f14-830fb104518f"
-ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
+APP_ID = "YOUR_APP_ID"
+ACCESS_KEY = "YOUR_ACCESS_KEY"
 TABLE_NAME = "Data TFR"
 
-# =========================
-# MEMORY + LOCK (สำคัญมาก)
-# =========================
 processed_ids = set()
 lock = threading.Lock()
 
+# =========================
+# DOWNLOAD IMAGE
+# =========================
+def download_image(url):
+    try:
+        r = requests.get(url, timeout=60)
 
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
+        if r.status_code != 200:
+            return None
+
+        img = cv2.imdecode(
+            np.frombuffer(r.content, np.uint8),
+            cv2.IMREAD_COLOR
+        )
+
+        return img
+
+    except:
+        return None
+
+
+# =========================
+# 🔥 AI CORE (FROM COLAB → GEN)
+# =========================
+def gen_evaluate_image(img):
+
+    # =========================
+    # PREPROCESS
+    # =========================
+    img = cv2.resize(img, (800, 600))
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # =========================
+    # MASK (NO WHITE)
+    # =========================
+    mask_egg = cv2.inRange(hsv, (10, 30, 60), (45, 255, 255))
+
+    mask_red = cv2.bitwise_or(
+        cv2.inRange(hsv, (0, 70, 50), (10, 255, 255)),
+        cv2.inRange(hsv, (160, 70, 50), (180, 255, 255))
+    )
+
+    mask_blue = cv2.inRange(hsv, (90, 50, 50), (130, 255, 255))
+    mask_green = cv2.inRange(hsv, (40, 40, 40), (80, 255, 255))
+    mask_black = cv2.inRange(hsv, (0, 0, 0), (180, 255, 50))
+
+    # =========================
+    # REMOVE NOISE
+    # =========================
+    edges = cv2.Canny(gray, 50, 150)
+
+    smooth_dark = cv2.bitwise_and(
+        mask_black,
+        cv2.bitwise_not(edges)
+    )
+
+    combined = mask_egg | mask_red | mask_blue | mask_green | mask_black
+    combined = cv2.bitwise_and(combined, cv2.bitwise_not(smooth_dark))
+
+    # =========================
+    # DYNAMIC ROI
+    # =========================
+    projection = np.sum(combined, axis=1)
+    norm = projection / (np.max(projection) + 1e-6)
+
+    active = np.where(norm > 0.08)[0]
+
+    h, w = combined.shape
+
+    if len(active) > 0:
+        ceiling_y = int(np.percentile(active, 5))
+        floor_y = int(np.percentile(active, 95))
+    else:
+        ceiling_y = int(h * 0.2)
+        floor_y = int(h * 0.8)
+
+    margin = int((floor_y - ceiling_y) * 0.05)
+
+    y1 = max(0, ceiling_y + margin)
+    y2 = min(h, floor_y - margin)
+
+    x1 = int(w * 0.03)
+    x2 = int(w * 0.97)
+
+    roi = combined[y1:y2, x1:x2]
+
+    # =========================
+    # CLEAN ROI
+    # =========================
+    if roi.shape[0] > 10:
+        roi[:int(roi.shape[0]*0.12), :] = 0
+
+    roi = cv2.morphologyEx(roi, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    roi = cv2.dilate(roi, np.ones((7, 7), np.uint8), 1)
+
+    # =========================
+    # VOLUME (%)
+    # =========================
+    fill = cv2.countNonZero(roi)
+    total = roi.size
+
+    volume = (fill / total) * 100
+
+    # =========================
+    # HEIGHT (%)
+    # =========================
+    projection_roi = np.sum(roi, axis=1)
+    norm_roi = projection_roi / (np.max(projection_roi) + 1e-6)
+
+    active_roi = np.where(norm_roi > 0.08)[0]
+
+    if len(active_roi) > 0:
+        highest = int(np.percentile(active_roi, 15))
+    else:
+        highest = roi.shape[0]
+
+    height = ((roi.shape[0] - highest) / roi.shape[0]) * 100
+
+    # =========================
+    # NORMALIZE
+    # =========================
+    volume = int(round(volume / 5) * 5)
+    height = int(round(height / 5) * 5)
+
+    volume = max(0, min(100, volume))
+    height = max(0, min(100, height))
+
+    if volume >= 85:
+        volume = 100
+    if height >= 85:
+        height = 100
+
+    return {
+        "volume": volume,
+        "height": height
+    }
 
 
 # =========================
 # APP SHEET UPDATE
 # =========================
-def update_appsheet(row_id, volume_text, status="Done"):
+def update_appsheet(row_id, volume_text, height_text):
 
     url = f"https://api.appsheet.com/api/v2/apps/{APP_ID}/tables/{TABLE_NAME}/Action"
 
@@ -42,53 +175,27 @@ def update_appsheet(row_id, volume_text, status="Done"):
             {
                 "id": row_id,
                 "TFR AI": volume_text,
-                "status": status
+                "Height AI": height_text,
+                "status": "Done"
             }
         ]
     }
 
-    for i in range(3):
+    for _ in range(3):
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=30)
-            print(f"[APP SHEET TRY {i+1}] {r.status_code} {r.text}")
 
             if r.status_code == 200:
                 return True
 
-        except Exception as e:
-            print("UPDATE ERROR:", str(e))
+        except:
             time.sleep(1)
 
     return False
 
 
 # =========================
-# IMAGE DOWNLOAD
-# =========================
-def download_image(image_url):
-
-    for i in range(3):
-        try:
-            r = requests.get(image_url, timeout=60)
-
-            if r.status_code == 200:
-                img = cv2.imdecode(
-                    np.frombuffer(r.content, np.uint8),
-                    cv2.IMREAD_COLOR
-                )
-                if img is not None:
-                    return img
-
-        except Exception as e:
-            print(f"[DOWNLOAD RETRY {i+1}]", e)
-
-        time.sleep(1)
-
-    return None
-
-
-# =========================
-# MAIN API
+# API
 # =========================
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -106,16 +213,13 @@ def predict():
             return jsonify({"error": "missing data"}), 400
 
         # =========================
-        # LOCK กันยิงซ้ำ
+        # LOCK (กันยิงซ้ำ)
         # =========================
         with lock:
             if row_id in processed_ids:
                 return jsonify({"status": "skipped"}), 200
             processed_ids.add(row_id)
 
-        # =========================
-        # delay กัน image upload ยังไม่เสร็จ
-        # =========================
         time.sleep(2)
 
         # =========================
@@ -126,59 +230,38 @@ def predict():
         if img is None:
             return jsonify({"error": "image fail"}), 400
 
-        img = cv2.resize(img, (800, 600))
+        # =========================
+        # AI GEN CORE
+        # =========================
+        result = gen_evaluate_image(img)
 
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
-
-        mask = cv2.inRange(hsv, (10, 30, 60), (45, 255, 255))
-
-        red = cv2.bitwise_or(
-            cv2.inRange(hsv, (0, 70, 50), (10, 255, 255)),
-            cv2.inRange(hsv, (160, 70, 50), (180, 255, 255))
-        )
-
-        blue = cv2.inRange(hsv, (90, 50, 50), (130, 255, 255))
-        green = cv2.inRange(hsv, (40, 40, 40), (80, 255, 255))
-        white = cv2.inRange(hsv, (0, 0, 160), (180, 70, 255))
-
-        combined = mask | red | blue | green | white
-
-        h, w = combined.shape
-        roi = combined[int(h*0.18):int(h*0.80), int(w*0.05):int(w*0.95)]
-
-        roi[:int(roi.shape[0]*0.12), :] = 0
-
-        roi = cv2.morphologyEx(roi, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        roi = cv2.dilate(roi, np.ones((7, 7), np.uint8), 1)
-
-        fill = cv2.countNonZero(roi)
-        total = roi.size
-
-        volume = int((fill / total) * 100)
-
-        if volume >= 85:
-            volume = 100
+        volume = result["volume"]
+        height = result["height"]
 
         volume_text = f"{volume}%"
+        height_text = f"{height}%"
 
-        print("VOLUME:", volume_text)
+        print("RESULT:", volume_text, height_text)
 
         # =========================
-        # UPDATE
+        # UPDATE APP SHEET
         # =========================
-        update_appsheet(row_id, volume_text)
+        update_appsheet(row_id, volume_text, height_text)
 
         return jsonify({
             "status": "success",
             "id": row_id,
-            "volume": volume_text
+            "volume": volume_text,
+            "height": height_text
         })
 
-    except Exception:
+    except:
         print(traceback.format_exc())
         return jsonify({"error": "server error"}), 500
 
 
+# =========================
+# RUN SERVER
+# =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
