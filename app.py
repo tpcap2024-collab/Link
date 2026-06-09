@@ -9,7 +9,7 @@ import threading
 app = Flask(__name__)
 
 # =========================
-# APP SHEET CONFIG
+# APPSHEET CONFIG
 # =========================
 APP_ID = "5ebec09a-62dd-4fa9-8f14-830fb104518f"
 ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
@@ -42,7 +42,7 @@ def download_image(url):
 
 
 # =========================
-# 🔥 AI CORE (FAST VOLUME)
+# 🔥 AI CORE (FIXED VOLUME BOOST)
 # =========================
 def gen_volume(img):
 
@@ -53,35 +53,47 @@ def gen_volume(img):
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
+    # =========================
+    # MASK (softened thresholds)
+    # =========================
     mask = (
-        cv2.inRange(hsv, (10, 30, 60), (45, 255, 255)) |
-        cv2.inRange(hsv, (0, 70, 50), (10, 255, 255)) |
-        cv2.inRange(hsv, (160, 70, 50), (180, 255, 255)) |
-        cv2.inRange(hsv, (90, 50, 50), (130, 255, 255)) |
-        cv2.inRange(hsv, (40, 40, 40), (80, 255, 255))
+        cv2.inRange(hsv, (10, 20, 50), (45, 255, 255)) |
+        cv2.inRange(hsv, (0, 60, 40), (10, 255, 255)) |
+        cv2.inRange(hsv, (160, 60, 40), (180, 255, 255)) |
+        cv2.inRange(hsv, (90, 40, 40), (130, 255, 255)) |
+        cv2.inRange(hsv, (35, 30, 30), (85, 255, 255))
     )
 
-    edges = cv2.Canny(gray, 50, 120)
+    # =========================
+    # EDGE FILTER (lighter)
+    # =========================
+    edges = cv2.Canny(gray, 80, 160)
     mask = cv2.bitwise_and(mask, cv2.bitwise_not(edges))
 
+    # =========================
+    # DYNAMIC ROI (wider capture)
+    # =========================
     projection = np.sum(mask, axis=1)
     norm = projection / (np.max(projection) + 1e-6)
 
-    active = np.where(norm > 0.08)[0]
+    active = np.where(norm > 0.05)[0]
 
     h, w = mask.shape
 
     if len(active) > 0:
-        top = int(np.percentile(active, 5))
-        bottom = int(np.percentile(active, 95))
+        top = int(np.percentile(active, 3))
+        bottom = int(np.percentile(active, 97))
     else:
-        top = int(h * 0.2)
-        bottom = int(h * 0.8)
+        top = int(h * 0.15)
+        bottom = int(h * 0.85)
 
-    roi = mask[top:bottom, int(w * 0.03):int(w * 0.97)]
+    roi = mask[top:bottom, int(w * 0.02):int(w * 0.98)]
 
+    # =========================
+    # CLEAN (light)
+    # =========================
     if roi.shape[0] > 10:
-        roi[:int(roi.shape[0] * 0.1), :] = 0
+        roi[:int(roi.shape[0] * 0.08), :] = 0
 
     roi = cv2.morphologyEx(
         roi,
@@ -89,15 +101,28 @@ def gen_volume(img):
         np.ones((3, 3), np.uint8)
     )
 
+    # =========================
+    # RAW VOLUME
+    # =========================
     fill = cv2.countNonZero(roi)
     total = roi.size
 
-    volume = (fill / total) * 100
+    raw_volume = (fill / total) * 100
 
+    # =========================
+    # 🔥 DENSITY BOOST FIX (แก้ volume ต่ำ)
+    # =========================
+    density = np.mean(roi > 0)
+
+    volume = raw_volume * (0.7 + density * 1.3)
+
+    # =========================
+    # NORMALIZE
+    # =========================
     volume = int(round(volume / 5) * 5)
     volume = max(0, min(100, volume))
 
-    if volume >= 85:
+    if volume >= 80:
         volume = 100
 
     return volume
@@ -184,7 +209,7 @@ def predict():
         print("VOLUME:", volume_text)
 
         # =========================
-        # 🔥 UPDATE APPSHEET
+        # UPDATE APPSHEET
         # =========================
         update_appsheet(row_id, volume_text)
 
