@@ -114,8 +114,7 @@ def gen_volume(img):
     volume = int(round(volume / 5) * 5)
     volume = max(0, min(100, volume))
 
-    if volume >= 80:
-        volume = 100
+ 
 
     return volume
 
