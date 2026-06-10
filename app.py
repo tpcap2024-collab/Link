@@ -8,10 +8,16 @@ import threading
 
 app = Flask(__name__)
 
+# =========================
+# APPSHEET CONFIG
+# =========================
 APP_ID = "5ebec09a-62dd-4fa9-8f14-830fb104518f"
 ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
 TABLE_NAME = "Data TFR"
 
+# =========================
+# LOCK
+# =========================
 processed_ids = set()
 lock = threading.Lock()
 
@@ -35,7 +41,7 @@ def download_image(url):
 
 
 # =========================
-# 🔥 IMPROVED VOLUME MODEL (LEVEL 1 FIX)
+# 🔥 BALANCED VOLUME MODEL
 # =========================
 def gen_volume(img):
 
@@ -47,17 +53,17 @@ def gen_volume(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # =========================
-    # 🔥 CLEANER COLOR MASK (ลด false positive)
+    # COLOR MASK (balanced)
     # =========================
     mask = (
-        cv2.inRange(hsv, (10, 40, 60), (40, 255, 255)) |   # กล่องทั่วไป
-        cv2.inRange(hsv, (0, 70, 50), (10, 255, 255)) |    # แดง
-        cv2.inRange(hsv, (160, 70, 50), (180, 255, 255)) | # แดงเข้ม
-        cv2.inRange(hsv, (90, 60, 60), (130, 255, 255))    # น้ำเงิน
+        cv2.inRange(hsv, (10, 35, 60), (40, 255, 255)) |
+        cv2.inRange(hsv, (0, 60, 50), (10, 255, 255)) |
+        cv2.inRange(hsv, (160, 60, 50), (180, 255, 255)) |
+        cv2.inRange(hsv, (90, 50, 50), (130, 255, 255))
     )
 
     # =========================
-    # 🔥 MORPHOLOGY (สำคัญมาก)
+    # MORPH CLEAN
     # =========================
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -66,52 +72,58 @@ def gen_volume(img):
     h, w = mask.shape
 
     # =========================
-    # 🔥 ROI (ตัดผนัง + พื้น + เพดาน)
+    # ROI (clean truck interior only)
     # =========================
-    roi = mask[int(h*0.18):int(h*0.88), int(w*0.05):int(w*0.95)]
+    roi = mask[int(h*0.18):int(h*0.90), int(w*0.04):int(w*0.96)]
 
     if roi.size == 0:
         return 0
 
     # =========================
-    # AREA DENSITY (หลัก)
+    # AREA DENSITY
     # =========================
     area_density = np.count_nonzero(roi) / roi.size
     area_density = np.clip(area_density, 0, 1)
 
     # =========================
-    # VERTICAL SIGNAL (ลด sensitivity)
+    # VERTICAL SIGNAL
     # =========================
     v_proj = np.sum(roi, axis=1)
     v_norm = v_proj / (np.max(v_proj) + 1e-6)
-    v_score = np.mean(v_norm > 0.12)   # ⬅️ เพิ่ม threshold
+    v_score = np.mean(v_norm > 0.10)
 
     # =========================
     # HORIZONTAL SIGNAL
     # =========================
     h_proj = np.sum(roi, axis=0)
     h_norm = h_proj / (np.max(h_proj) + 1e-6)
-    h_score = np.mean(h_norm > 0.12)
+    h_score = np.mean(h_norm > 0.10)
 
     # =========================
-    # 🔥 FINAL (ลด overestimate)
+    # BASE VOLUME (BALANCED WEIGHTS)
     # =========================
     volume = (
-        area_density * 100 * 0.75 +
-        v_score * 100 * 0.15 +
-        h_score * 100 * 0.10
+        area_density * 100 * 0.80 +
+        v_score * 100 * 0.12 +
+        h_score * 100 * 0.08
     )
 
     # =========================
-    # 🔥 STABILIZER (กัน 40% → 80% หลอก)
+    # NON-LINEAR CALIBRATION
     # =========================
-    if area_density < 0.15:
-        volume *= 0.75
-    elif area_density < 0.35:
-        volume *= 0.9
+    if volume < 30:
+        volume *= 1.10
+    elif volume > 75:
+        volume *= 0.95
 
     # =========================
-    # ROUND + CLAMP
+    # LOW DENSITY FIX
+    # =========================
+    if area_density < 0.12:
+        volume *= 0.85
+
+    # =========================
+    # FINAL NORMALIZE
     # =========================
     volume = int(round(volume / 5) * 5)
     volume = max(0, min(100, volume))
@@ -120,7 +132,7 @@ def gen_volume(img):
 
 
 # =========================
-# APPSHEET UPDATE
+# UPDATE APPSHEET
 # =========================
 def update_appsheet(row_id, volume_text):
 
@@ -149,7 +161,7 @@ def update_appsheet(row_id, volume_text):
 
 
 # =========================
-# API
+# API ENDPOINT
 # =========================
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -166,20 +178,33 @@ def predict():
         if not image_url or not row_id:
             return jsonify({"error": "missing data"}), 400
 
+        # =========================
+        # DUPLICATE LOCK
+        # =========================
         with lock:
             if row_id in processed_ids:
                 return jsonify({"status": "skipped"}), 200
             processed_ids.add(row_id)
 
+        # =========================
+        # IMAGE LOAD
+        # =========================
         img = download_image(image_url)
+
         if img is None:
             return jsonify({"error": "image fail"}), 400
 
+        # =========================
+        # AI PROCESS
+        # =========================
         volume = gen_volume(img)
         volume_text = f"{volume}%"
 
         print("VOLUME:", volume_text)
 
+        # =========================
+        # UPDATE SHEET
+        # =========================
         update_appsheet(row_id, volume_text)
 
         return jsonify({
@@ -193,5 +218,12 @@ def predict():
         return jsonify({"error": "server error"}), 500
 
 
+# =========================
+# RUN SERVER
+# =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000, threaded=True)
+    app.run(
+        host="0.0.0.0",
+        port=10000,
+        threaded=True
+    )
