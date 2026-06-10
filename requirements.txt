@@ -3,3 +3,5 @@ requests
 numpy
 opencv-python-headless
 gunicorn
+joblib
+scikit-learn
