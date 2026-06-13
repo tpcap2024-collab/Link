@@ -123,16 +123,12 @@ def gen_volume(img):
     # =========================
     # SCALE TO %
     # =========================
-    volume = int(score * 500)
+    volume = int(score * 1600)
 
     # =========================
     # CALIBRATION
     # =========================
-    if volume < 20:
-        volume *= 0.8
 
-    elif volume > 80:
-        volume *= 1.1
 
     volume = int(round(volume / 5) * 5)
 
