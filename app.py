@@ -87,19 +87,21 @@ def gen_volume(img):
     # =========================
     # ROI
     # =========================
-    if view_type == "rear":
+   if view_type == "rear":
 
-        roi = img[
-            int(h * 0.18):int(h * 0.82),
-            int(w * 0.15):int(w * 0.85)
-        ]
+    # ไม่แก้
+    roi = img[
+        int(h * 0.18):int(h * 0.82),
+        int(w * 0.15):int(w * 0.85)
+    ]
 
-    else:
+else:
 
-        roi = img[
-            int(h * 0.15):int(h * 0.85),
-            int(w * 0.08):int(w * 0.92)
-        ]
+    # แนวนอน ตัดแคบลง
+    roi = img[
+        int(h * 0.25):int(h * 0.75),
+        int(w * 0.15):int(w * 0.85)
+    ]
 
     if roi.size == 0:
         return 0
@@ -180,12 +182,20 @@ def gen_volume(img):
     # =========================
     # SCORE
     # =========================
-    score = (
-        edge_density * 0.75 +
-        texture_density * 0.25
+   score = (
+    edge_density * 0.75 +
+    texture_density * 0.25
     )
 
+if view_type == "rear":
+
+    # แนวตั้ง ใช้สูตรเดิม
     volume = int(score * 800)
+
+else:
+
+    # แนวนอน ลด Scale ลง
+    volume = int(score * 280)
 
     volume = int(round(volume / 5) * 5)
 
