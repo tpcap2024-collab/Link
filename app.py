@@ -72,10 +72,7 @@ def gen_volume(img):
 
         top = (h - target_h) // 2
 
-        img = img[
-            top:top + target_h,
-            :
-        ]
+        img = img[top:top + target_h, :]
 
     h, w = img.shape[:2]
 
@@ -87,48 +84,22 @@ def gen_volume(img):
     # =========================
     # ROI
     # =========================
-   if view_type == "rear":
+    if view_type == "rear":
 
-    # ไม่แก้
-    roi = img[
-        int(h * 0.18):int(h * 0.82),
-        int(w * 0.15):int(w * 0.85)
-    ]
+        roi = img[
+            int(h * 0.18):int(h * 0.82),
+            int(w * 0.15):int(w * 0.85)
+        ]
 
-else:
+    else:
 
-    # แนวนอน ตัดแคบลง
-    roi = img[
-        int(h * 0.25):int(h * 0.75),
-        int(w * 0.15):int(w * 0.85)
-    ]
+        roi = img[
+            int(h * 0.25):int(h * 0.75),
+            int(w * 0.15):int(w * 0.85)
+        ]
 
     if roi.size == 0:
         return 0
-
-    # =========================
-    # DEBUG ROI
-    # =========================
-    debug = img.copy()
-
-    x1 = int(w * 0.15) if view_type == "rear" else int(w * 0.08)
-    x2 = int(w * 0.85) if view_type == "rear" else int(w * 0.92)
-
-    y1 = int(h * 0.18) if view_type == "rear" else int(h * 0.15)
-    y2 = int(h * 0.82) if view_type == "rear" else int(h * 0.85)
-
-    cv2.rectangle(
-        debug,
-        (x1, y1),
-        (x2, y2),
-        (0, 255, 0),
-        3
-    )
-
-    cv2.imwrite(
-        f"debug_roi_{view_type}.jpg",
-        debug
-    )
 
     # =========================
     # GRAYSCALE
@@ -182,20 +153,23 @@ else:
     # =========================
     # SCORE
     # =========================
-   score = (
-    edge_density * 0.75 +
-    texture_density * 0.25
+    score = (
+        edge_density * 0.75 +
+        texture_density * 0.25
     )
 
-if view_type == "rear":
+    # =========================
+    # CALCULATE VOLUME
+    # =========================
+    if view_type == "rear":
 
-    # แนวตั้ง ใช้สูตรเดิม
-    volume = int(score * 800)
+        # แนวตั้ง (สูตรเดิม)
+        volume = int(score * 800)
 
-else:
+    else:
 
-    # แนวนอน ลด Scale ลง
-    volume = int(score * 280)
+        # แนวนอน (ลด Scale)
+        volume = int(score * 350)
 
     volume = int(round(volume / 5) * 5)
 
