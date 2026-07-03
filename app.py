@@ -20,7 +20,6 @@ ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
 TABLE_NAME = "Data TFR"
 
 
-
 # =========================
 # DEBUG CONFIG
 # =========================
@@ -80,12 +79,6 @@ def normalize_text(value):
 
 
 def extract_url(value):
-    """
-    รองรับ:
-    - https://...
-    - {"Url":"https://..."}
-    - {"url":"https://..."}
-    """
     if value is None:
         return ""
 
@@ -206,7 +199,7 @@ def clean_mask(mask, min_area_ratio=0.002):
 
 
 # =========================
-# OUTBOUND FILLRATE MODEL
+# FILLRATE MODEL
 # =========================
 def gen_fillrate_outbound(
     img,
@@ -231,8 +224,7 @@ def gen_fillrate_outbound(
     img = cv2.resize(img, (640, 480))
 
     # =========================
-    # SIDE VIEW
-    # 4:3 -> 16:9
+    # SIDE VIEW 4:3 -> 16:9
     # =========================
     if view_type == "side":
         h, w = img.shape[:2]
@@ -244,37 +236,32 @@ def gen_fillrate_outbound(
 
     print(
         f"VIEW={view_type} "
-        f"SIZE={w}x{h}"
+        f"SIZE={w}x{h} "
+        f"ROI_MODE={roi_mode}"
     )
 
     # =========================
     # ROI
     # =========================
     if roi_mode == "inbound_left":
-        # Inbound Left: จับพื้นที่สินค้าด้านข้างรถ
-        # ตัดด้านล่างที่เป็นล้อ/คาน/กันชนออก
         roi = img[
-            int(h * 0.08):int(h * 0.75),
-            int(w * 0.06):int(w * 0.96)
+            int(h * 0.22):int(h * 0.72),
+            int(w * 0.02):int(w * 0.86)
         ]
 
     elif roi_mode == "inbound_right":
-        # Inbound Right: จับพื้นที่สินค้าด้านข้างรถ
-        # เปิดด้านซ้ายเพิ่มเล็กน้อย เพราะสินค้ามักเริ่มใกล้ขอบภาพ
         roi = img[
-            int(h * 0.08):int(h * 0.75),
-            int(w * 0.06):int(w * 0.96)
+            int(h * 0.28):int(h * 0.72),
+            int(w * 0.02):int(w * 0.68)
         ]
 
     elif view_type == "rear":
-        # Outbound / Rear view
         roi = img[
             int(h * 0.18):int(h * 0.82),
             int(w * 0.15):int(w * 0.85)
         ]
 
     else:
-        # Outbound / Side view เดิม
         roi = img[
             int(h * 0.25):int(h * 0.75),
             int(w * 0.15):int(w * 0.85)
@@ -336,6 +323,69 @@ def gen_fillrate_outbound(
 
     v_mean = float(v_channel.mean())
     s_mean = float(s_channel.mean())
+
+    # =========================
+    # INBOUND GRAY WALL MASK
+    # ตัดสีเทา / ผนังตู้ / หลังคา / โครงสร้าง ไม่ให้นับเป็นสินค้า
+    # =========================
+    if roi_mode in ["inbound_left", "inbound_right"]:
+
+        lab_check = cv2.cvtColor(
+            roi_norm,
+            cv2.COLOR_BGR2LAB
+        )
+
+        l_check, a_check, b_check = cv2.split(lab_check)
+
+        a_diff = np.abs(a_check.astype(np.int16) - 128)
+        b_diff = np.abs(b_check.astype(np.int16) - 128)
+
+        lab_gray_mask = np.where(
+            (l_check > 65) &
+            (a_diff < 14) &
+            (b_diff < 18),
+            255,
+            0
+        ).astype(np.uint8)
+
+        hsv_gray_mask = cv2.inRange(
+            hsv,
+            (0, 0, 55),
+            (180, 65, 245)
+        )
+
+        gray_wall_mask = cv2.bitwise_or(
+            lab_gray_mask,
+            hsv_gray_mask
+        )
+
+        gray_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (7, 7)
+        )
+
+        gray_wall_mask = cv2.morphologyEx(
+            gray_wall_mask,
+            cv2.MORPH_CLOSE,
+            gray_kernel,
+            iterations=1
+        )
+
+        gray_wall_mask = cv2.dilate(
+            gray_wall_mask,
+            gray_kernel,
+            iterations=1
+        )
+
+        gray_wall_ratio = cv2.countNonZero(gray_wall_mask) / float(gray_wall_mask.size)
+
+        print(
+            f"INBOUND GRAY WALL MASK "
+            f"RATIO={gray_wall_ratio:.3f}"
+        )
+
+    else:
+        gray_wall_mask = np.zeros_like(gray)
 
     # =========================
     # CARGO COLOR MASKS
@@ -449,7 +499,11 @@ def gen_fillrate_outbound(
         dtype=np.uint8
     )
 
-    top_cut_ratio = 0.12 if view_type == "rear" else 0.16
+    if roi_mode in ["inbound_left", "inbound_right"]:
+        top_cut_ratio = 0.03
+    else:
+        top_cut_ratio = 0.12 if view_type == "rear" else 0.16
+
     top_cut = int(rh * top_cut_ratio)
 
     top_suppress_mask[:top_cut, :] = 0
@@ -463,6 +517,43 @@ def gen_fillrate_outbound(
         dark_mask,
         top_suppress_mask
     )
+
+    # =========================
+    # REMOVE GRAY WALL FOR INBOUND
+    # =========================
+    if roi_mode in ["inbound_left", "inbound_right"]:
+
+        not_gray_wall_mask = cv2.bitwise_not(gray_wall_mask)
+
+        green_mask = cv2.bitwise_and(
+            green_mask,
+            not_gray_wall_mask
+        )
+
+        brown_mask = cv2.bitwise_and(
+            brown_mask,
+            not_gray_wall_mask
+        )
+
+        blue_mask = cv2.bitwise_and(
+            blue_mask,
+            not_gray_wall_mask
+        )
+
+        red_mask = cv2.bitwise_and(
+            red_mask,
+            not_gray_wall_mask
+        )
+
+        dark_mask = cv2.bitwise_and(
+            dark_mask,
+            not_gray_wall_mask
+        )
+
+        texture_mask = cv2.bitwise_and(
+            texture_mask,
+            not_gray_wall_mask
+        )
 
     # =========================
     # COMBINE COLOR MASKS
@@ -499,6 +590,16 @@ def gen_fillrate_outbound(
         cargo_mask,
         container_mask
     )
+
+    # =========================
+    # REMOVE GRAY WALL AGAIN AFTER COMBINE
+    # =========================
+    if roi_mode in ["inbound_left", "inbound_right"]:
+
+        cargo_mask = cv2.bitwise_and(
+            cargo_mask,
+            cv2.bitwise_not(gray_wall_mask)
+        )
 
     # =========================
     # MORPHOLOGY
@@ -588,6 +689,12 @@ def gen_fillrate_outbound(
             cargo_mask,
             container_mask
         )
+
+        if roi_mode in ["inbound_left", "inbound_right"]:
+            cargo_mask = cv2.bitwise_and(
+                cargo_mask,
+                cv2.bitwise_not(gray_wall_mask)
+            )
 
         cargo_mask = cv2.morphologyEx(
             cargo_mask,
@@ -693,6 +800,7 @@ def gen_fillrate_outbound(
 
     print(
         f"VIEW={view_type} "
+        f"ROI_MODE={roi_mode} "
         f"VMEAN={v_mean:.1f} "
         f"SMEAN={s_mean:.1f} "
         f"RAW_CARGO={raw_cargo_ratio:.3f} "
@@ -762,6 +870,7 @@ def gen_fillrate_outbound(
         save_debug(debug_filename, overlay)
 
     return output_volume
+
 
 # =========================
 # INBOUND FILLRATE MODEL
@@ -1148,7 +1257,8 @@ def predict():
                 img,
                 debug=debug,
                 return_empty=return_empty,
-                debug_filename="debug_overlay.jpg"
+                debug_filename="debug_overlay.jpg",
+                roi_mode="outbound"
             )
 
             mode = "outbound_fillrate"
