@@ -199,6 +199,83 @@ def clean_mask(mask, min_area_ratio=0.002):
 
 
 # =========================
+# INBOUND PALLET GROUP FILTER
+# จับเป็นกลุ่มและตัด object ที่ลอย
+# =========================
+def filter_inbound_pallet_groups(mask):
+    if mask is None or mask.size == 0:
+        return mask
+
+    h, w = mask.shape[:2]
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask,
+        connectivity=8
+    )
+
+    filtered = np.zeros_like(mask)
+
+    min_area = h * w * 0.008
+    max_top_y = int(h * 0.18)
+
+    candidates = []
+
+    for i in range(1, num_labels):
+        x = stats[i, cv2.CC_STAT_LEFT]
+        y = stats[i, cv2.CC_STAT_TOP]
+        bw = stats[i, cv2.CC_STAT_WIDTH]
+        bh = stats[i, cv2.CC_STAT_HEIGHT]
+        area = stats[i, cv2.CC_STAT_AREA]
+
+        if area < min_area:
+            continue
+
+        if bw <= 0 or bh <= 0:
+            continue
+
+        aspect = bw / float(bh)
+
+        # ตัดเส้นยาวบาง เช่น หลังคา / ขอบตู้ / เส้นผนัง
+        if bh < h * 0.06 and bw > w * 0.30:
+            continue
+
+        # ตัด object ที่อยู่ด้านบนมากและมีขนาดไม่ใหญ่พอ
+        if y < max_top_y and area < h * w * 0.035:
+            continue
+
+        # รูปทรงที่พอเป็นกลุ่มพาเลท / ตะแกรง / ลัง
+        if 0.18 <= aspect <= 9.00:
+            candidates.append((i, area, x, y, bw, bh))
+
+    if not candidates:
+        return filtered
+
+    candidates = sorted(
+        candidates,
+        key=lambda item: item[1],
+        reverse=True
+    )
+
+    main_label, main_area, main_x, main_y, main_w, main_h = candidates[0]
+
+    main_bottom = main_y + main_h
+    main_center_x = main_x + main_w / 2
+
+    for i, area, x, y, bw, bh in candidates:
+        bottom = y + bh
+        center_x = x + bw / 2
+
+        vertical_close = abs(bottom - main_bottom) < h * 0.48
+        horizontal_close = abs(center_x - main_center_x) < w * 0.60
+        large_enough = area > h * w * 0.020
+
+        if i == main_label or large_enough or (vertical_close and horizontal_close):
+            filtered[labels == i] = 255
+
+    return filtered
+
+
+# =========================
 # FILLRATE MODEL
 # =========================
 def gen_fillrate_outbound(
@@ -212,20 +289,11 @@ def gen_fillrate_outbound(
     if img is None or img.size == 0:
         return 0
 
-    # =========================
-    # DETECT VIEW TYPE
-    # =========================
     orig_h, orig_w = img.shape[:2]
     view_type = "rear" if orig_h > orig_w else "side"
 
-    # =========================
-    # RESIZE
-    # =========================
     img = cv2.resize(img, (640, 480))
 
-    # =========================
-    # SIDE VIEW 4:3 -> 16:9
-    # =========================
     if view_type == "side":
         h, w = img.shape[:2]
         target_h = int(w * 9 / 16)
@@ -244,52 +312,36 @@ def gen_fillrate_outbound(
     # ROI
     # =========================
     if roi_mode == "inbound_left":
-        # Inbound wide ROI
         y1 = int(h * 0.08)
         y2 = int(h * 0.95)
         x1 = int(w * 0.00)
         x2 = int(w * 1.00)
 
-        roi = img[
-            y1:y2,
-            x1:x2
-        ]
+        roi = img[y1:y2, x1:x2]
 
     elif roi_mode == "inbound_right":
-        # Inbound wide ROI
         y1 = int(h * 0.08)
         y2 = int(h * 0.95)
         x1 = int(w * 0.00)
         x2 = int(w * 1.00)
 
-        roi = img[
-            y1:y2,
-            x1:x2
-        ]
+        roi = img[y1:y2, x1:x2]
 
     elif view_type == "rear":
-        # Outbound Rear
         y1 = int(h * 0.18)
         y2 = int(h * 0.82)
         x1 = int(w * 0.15)
         x2 = int(w * 0.85)
 
-        roi = img[
-            y1:y2,
-            x1:x2
-        ]
+        roi = img[y1:y2, x1:x2]
 
     else:
-        # Outbound Side
         y1 = int(h * 0.25)
         y2 = int(h * 0.75)
         x1 = int(w * 0.15)
         x2 = int(w * 0.85)
 
-        roi = img[
-            y1:y2,
-            x1:x2
-        ]
+        roi = img[y1:y2, x1:x2]
 
     print(
         f"ROI_MODE={roi_mode} "
@@ -302,18 +354,12 @@ def gen_fillrate_outbound(
 
     rh, rw = roi.shape[:2]
 
-    # =========================
-    # CONTAINER MASK
-    # =========================
     container_mask = np.full(
         (rh, rw),
         255,
         dtype=np.uint8
     )
 
-    # =========================
-    # LIGHT NORMALIZATION
-    # =========================
     lab = cv2.cvtColor(
         roi,
         cv2.COLOR_BGR2LAB
@@ -355,9 +401,7 @@ def gen_fillrate_outbound(
     s_mean = float(s_channel.mean())
 
     # =========================
-    # INBOUND GRAY WALL MASK - SOFTER
-    # ตัดเฉพาะเทาจริง / ผนังตู้
-    # ไม่ให้ไปตัดพาเลทสีครีม / ฟ้าอ่อน / เขียวอ่อน
+    # GRAY WALL MASK
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
@@ -413,18 +457,15 @@ def gen_fillrate_outbound(
         gray_wall_mask = np.zeros_like(gray)
 
     # =========================
-    # INBOUND BACKGROUND SUPPRESSION
-    # ตัดหลังคา / ผนัง / พื้นที่เรียบ ที่ไม่ใช่สินค้า
+    # BACKGROUND MASK
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
-        # 1) ตัดแถบหลังคาด้านบนของ ROI
         ceiling_mask = np.zeros_like(gray)
 
         ceiling_cut = int(rh * 0.18)
         ceiling_mask[:ceiling_cut, :] = 255
 
-        # 2) พื้นที่เรียบ / ผนัง / หลังคา มักมี edge density ต่ำ
         edge_for_bg = cv2.Canny(
             gray_blur,
             50,
@@ -442,7 +483,6 @@ def gen_fillrate_outbound(
             8
         )
 
-        # 3) สีอิ่มตัวต่ำหรือเทาอมเขียวที่มักเป็นผนัง/หลังคา
         low_sat_mask = cv2.inRange(
             s_channel,
             0,
@@ -489,7 +529,7 @@ def gen_fillrate_outbound(
         inbound_background_mask = np.zeros_like(gray)
 
     # =========================
-    # GREEN PALLET / GREEN CARGO
+    # COLOR MASKS
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
         green_mask = cv2.inRange(
@@ -504,9 +544,6 @@ def gen_fillrate_outbound(
             (95, 255, 255)
         )
 
-    # =========================
-    # BROWN CARTON / WOOD / PALLET
-    # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
         brown_mask = cv2.inRange(
             hsv,
@@ -520,9 +557,6 @@ def gen_fillrate_outbound(
             (35, 255, 230)
         )
 
-    # =========================
-    # CREAM / BEIGE PALLET / LIGHT CARTON
-    # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
         cream_mask = cv2.inRange(
             hsv,
@@ -532,9 +566,6 @@ def gen_fillrate_outbound(
     else:
         cream_mask = np.zeros_like(brown_mask)
 
-    # =========================
-    # BLUE / CYAN PALLET / FRAME / CRATE
-    # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
         blue_mask = cv2.inRange(
             hsv,
@@ -548,9 +579,6 @@ def gen_fillrate_outbound(
             (125, 255, 255)
         )
 
-    # =========================
-    # RED CARGO
-    # =========================
     red_mask_1 = cv2.inRange(
         hsv,
         (0, 55, 45),
@@ -568,16 +596,12 @@ def gen_fillrate_outbound(
         red_mask_2
     )
 
-    # =========================
-    # DARK MASK
-    # =========================
     dark_mask = cv2.inRange(
         hsv,
         (0, 55, 0),
         (180, 255, 65)
     )
 
-    # Inbound ปิด dark_mask เพื่อลดการจับเงา / หลังคา / ผนังมืด
     if roi_mode in ["inbound_left", "inbound_right"]:
         dark_mask = np.zeros_like(dark_mask)
 
@@ -615,9 +639,6 @@ def gen_fillrate_outbound(
         texture_candidate
     )
 
-    # =========================
-    # EDGE DENSITY FILTER
-    # =========================
     edges = cv2.Canny(
         gray_blur,
         40,
@@ -641,7 +662,7 @@ def gen_fillrate_outbound(
     )
 
     # =========================
-    # TOP FALSE POSITIVE SUPPRESSION
+    # TOP SUPPRESSION
     # =========================
     top_suppress_mask = np.full(
         (rh, rw),
@@ -735,7 +756,6 @@ def gen_fillrate_outbound(
 
     # =========================
     # INBOUND COLOR BOOST
-    # เติม mask สีให้เต็มขึ้น เพราะพาเลท/ตะแกรงมักมีช่องว่าง
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
@@ -759,7 +779,6 @@ def gen_fillrate_outbound(
 
     # =========================
     # INBOUND TEXTURE FILTER
-    # Texture ต้องอยู่ใกล้พื้นที่สีพาเลท/สินค้า
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
@@ -812,11 +831,7 @@ def gen_fillrate_outbound(
         container_mask
     )
 
-    # =========================
-    # REMOVE BACKGROUND AGAIN AFTER COMBINE
-    # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
-
         cargo_mask = cv2.bitwise_and(
             cargo_mask,
             cv2.bitwise_not(inbound_background_mask)
@@ -853,6 +868,9 @@ def gen_fillrate_outbound(
         cargo_mask,
         min_area_ratio=0.005
     )
+
+    if roi_mode in ["inbound_left", "inbound_right"]:
+        cargo_mask = filter_inbound_pallet_groups(cargo_mask)
 
     # =========================
     # CONTOUR FILTER
@@ -916,6 +934,8 @@ def gen_fillrate_outbound(
                 cargo_mask,
                 cv2.bitwise_not(inbound_background_mask)
             )
+
+            cargo_mask = filter_inbound_pallet_groups(cargo_mask)
 
         cargo_mask = cv2.morphologyEx(
             cargo_mask,
@@ -1032,20 +1052,18 @@ def gen_fillrate_outbound(
     )
 
     # =========================
-    # DEBUG OUTPUT: SAVE OVERLAY ONLY
+    # DEBUG OUTPUT
     # =========================
     if debug:
 
         color_layer = roi_norm.copy()
 
-        # GREEN = cargo
         color_layer[cargo_mask > 0] = (
             0,
             255,
             0
         )
 
-        # BLUE = empty
         color_layer[empty_mask > 0] = (
             255,
             0,
@@ -1384,11 +1402,8 @@ def predict():
 
                 return jsonify({
                     "error": "missing inbound images",
-                    "message": "project is Inbound but link Left or link Right is empty",
                     "required": ["link Left", "link Right"],
                     "project": project,
-                    "link Left raw": left_url_raw,
-                    "link Right raw": right_url_raw,
                     "link Left": left_url,
                     "link Right": right_url
                 }), 400
@@ -1457,7 +1472,6 @@ def predict():
                 return jsonify({
                     "error": "missing outbound image",
                     "required": ["link"],
-                    "link raw": image_url_raw,
                     "link": image_url
                 }), 400
 
@@ -1490,9 +1504,6 @@ def predict():
                 f"MODE={mode}"
             )
 
-        # =========================
-        # INVALID PROJECT
-        # =========================
         else:
             with lock:
                 processed_ids.pop(row_id, None)
@@ -1500,7 +1511,6 @@ def predict():
             return jsonify({
                 "error": "invalid project",
                 "project": project,
-                "project_key": project_key,
                 "allowed": ["Inbound", "Outbound"]
             }), 400
 
@@ -1508,9 +1518,6 @@ def predict():
 
         print("FINAL VOLUME:", volume_text)
 
-        # =========================
-        # UPDATE SHEET
-        # =========================
         app_status, app_response = update_appsheet(row_id, volume_text)
 
         if app_status < 200 or app_status >= 300:
