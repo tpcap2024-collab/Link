@@ -244,28 +244,62 @@ def gen_fillrate_outbound(
     # ROI
     # =========================
     if roi_mode == "inbound_left":
+        # Inbound Left
+        # ครอบพื้นที่บรรทุกด้านข้างให้พอดี
+        # ตัดหลังคาด้านบน และตัดล้อ/กันชนล่างออก
+        # เก็บผนังเทาไว้เป็น Empty
+        y1 = int(h * 0.23)
+        y2 = int(h * 0.88)
+        x1 = int(w * 0.03)
+        x2 = int(w * 0.98)
+
         roi = img[
-            int(h * 0.30):int(h * 0.78),
-            int(w * 0.06):int(w * 0.92)
+            y1:y2,
+            x1:x2
         ]
 
     elif roi_mode == "inbound_right":
+        # Inbound Right
+        # ใช้กรอบกว้างเพื่อเก็บพื้นที่ว่าง/ผนังเทาไว้คิด Empty
+        y1 = int(h * 0.23)
+        y2 = int(h * 0.88)
+        x1 = int(w * 0.02)
+        x2 = int(w * 0.98)
+
         roi = img[
-            int(h * 0.34):int(h * 0.78),
-            int(w * 0.04):int(w * 0.72)
+            y1:y2,
+            x1:x2
         ]
 
     elif view_type == "rear":
+        # Outbound Rear
+        y1 = int(h * 0.18)
+        y2 = int(h * 0.82)
+        x1 = int(w * 0.15)
+        x2 = int(w * 0.85)
+
         roi = img[
-            int(h * 0.18):int(h * 0.82),
-            int(w * 0.15):int(w * 0.85)
+            y1:y2,
+            x1:x2
         ]
 
     else:
+        # Outbound Side
+        y1 = int(h * 0.25)
+        y2 = int(h * 0.75)
+        x1 = int(w * 0.15)
+        x2 = int(w * 0.85)
+
         roi = img[
-            int(h * 0.25):int(h * 0.75),
-            int(w * 0.15):int(w * 0.85)
+            y1:y2,
+            x1:x2
         ]
+
+    print(
+        f"ROI_MODE={roi_mode} "
+        f"ROI_X={x1}:{x2} "
+        f"ROI_Y={y1}:{y2}"
+    )
 
     if roi.size == 0:
         return 0
@@ -326,7 +360,8 @@ def gen_fillrate_outbound(
 
     # =========================
     # INBOUND GRAY WALL MASK
-    # ตัดสีเทา / ผนังตู้ / หลังคา / โครงสร้าง
+    # ตัดสีเทา / ผนังตู้ / หลังคา / โครงสร้าง ออกจาก Cargo
+    # แต่ยังเหลืออยู่ใน Container เพื่อคิดเป็น Empty
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
