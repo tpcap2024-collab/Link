@@ -247,28 +247,24 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
     # CARGO COLOR MASKS
     # =========================
 
-    # GREEN PALLET / GREEN OBJECT
     green_mask = cv2.inRange(
         hsv,
         (35, 45, 45),
         (95, 255, 255)
     )
 
-    # BROWN CARTON / WOOD / PALLET
     brown_mask = cv2.inRange(
         hsv,
         (5, 45, 45),
         (35, 255, 230)
     )
 
-    # BLUE / CYAN CRATE
     blue_mask = cv2.inRange(
         hsv,
         (85, 35, 35),
         (125, 255, 255)
     )
 
-    # RED CRATE / RED CARGO
     red_mask_1 = cv2.inRange(
         hsv,
         (0, 60, 50),
@@ -286,7 +282,6 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
         red_mask_2
     )
 
-    # DARK CARGO
     dark_mask = cv2.inRange(
         hsv,
         (0, 55, 0),
@@ -294,7 +289,7 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
     )
 
     # =========================
-    # TEXTURE MASK - CONSERVATIVE
+    # TEXTURE MASK
     # =========================
     adaptive_texture = cv2.adaptiveThreshold(
         gray_blur,
@@ -752,6 +747,9 @@ def update_appsheet(row_id, volume_text):
     }
 
     try:
+        print("APPSHEET UPDATE URL:", url)
+        print("APPSHEET UPDATE PAYLOAD:", payload)
+
         r = requests.post(
             url,
             json=payload,
@@ -760,10 +758,13 @@ def update_appsheet(row_id, volume_text):
         )
 
         print("APPSHEET STATUS:", r.status_code)
-        print("APPSHEET RESPONSE:", r.text[:300])
+        print("APPSHEET RESPONSE:", r.text[:500])
+
+        return r.status_code, r.text
 
     except Exception as e:
         print("APPSHEET ERROR:", e)
+        return 500, str(e)
 
 
 # =========================
@@ -850,14 +851,18 @@ def debug_list():
 @app.route("/predict", methods=["POST"])
 def predict():
 
+    row_id = None
+
     try:
         data = request.get_json(silent=True)
+
+        print("REQUEST DATA:", data)
 
         if not data:
             return jsonify({"error": "no json"}), 400
 
         row_id = data.get("id")
-        project = data.get("project", "")
+        project = str(data.get("project", "")).strip()
 
         # Outbound image
         image_url = data.get("link")
@@ -876,6 +881,12 @@ def predict():
         if not project:
             return jsonify({"error": "missing project"}), 400
 
+        print("ROW ID:", row_id)
+        print("PROJECT:", project)
+        print("LINK:", image_url)
+        print("LINK LEFT:", left_url)
+        print("LINK RIGHT:", right_url)
+
         # =========================
         # DUPLICATE LOCK
         # =========================
@@ -883,7 +894,10 @@ def predict():
             cleanup_processed_ids()
 
             if row_id in processed_ids:
-                return jsonify({"status": "skipped"}), 200
+                return jsonify({
+                    "status": "skipped",
+                    "id": row_id
+                }), 200
 
             processed_ids[row_id] = time.time()
 
@@ -893,20 +907,37 @@ def predict():
         if project == "Inbound":
 
             if not left_url or not right_url:
+                with lock:
+                    processed_ids.pop(row_id, None)
+
                 return jsonify({
                     "error": "missing inbound images",
-                    "required": ["link Left", "link Right"]
+                    "required": ["link Left", "link Right"],
+                    "link Left": left_url,
+                    "link Right": right_url
                 }), 400
 
             img_left = download_image(left_url)
 
             if img_left is None:
-                return jsonify({"error": "left image fail"}), 400
+                with lock:
+                    processed_ids.pop(row_id, None)
+
+                return jsonify({
+                    "error": "left image fail",
+                    "link Left": left_url
+                }), 400
 
             img_right = download_image(right_url)
 
             if img_right is None:
-                return jsonify({"error": "right image fail"}), 400
+                with lock:
+                    processed_ids.pop(row_id, None)
+
+                return jsonify({
+                    "error": "right image fail",
+                    "link Right": right_url
+                }), 400
 
             left_volume = gen_fillrate_inbound(
                 img_left,
@@ -938,6 +969,9 @@ def predict():
         elif project == "Outbound":
 
             if not image_url:
+                with lock:
+                    processed_ids.pop(row_id, None)
+
                 return jsonify({
                     "error": "missing outbound image",
                     "required": ["link"]
@@ -946,7 +980,13 @@ def predict():
             img = download_image(image_url)
 
             if img is None:
-                return jsonify({"error": "image fail"}), 400
+                with lock:
+                    processed_ids.pop(row_id, None)
+
+                return jsonify({
+                    "error": "image fail",
+                    "link": image_url
+                }), 400
 
             volume = gen_fillrate_outbound(
                 img,
@@ -966,6 +1006,9 @@ def predict():
         # INVALID PROJECT
         # =========================
         else:
+            with lock:
+                processed_ids.pop(row_id, None)
+
             return jsonify({
                 "error": "invalid project",
                 "project": project,
@@ -979,7 +1022,20 @@ def predict():
         # =========================
         # UPDATE SHEET
         # =========================
-        update_appsheet(row_id, volume_text)
+        app_status, app_response = update_appsheet(row_id, volume_text)
+
+        if app_status < 200 or app_status >= 300:
+            with lock:
+                processed_ids.pop(row_id, None)
+
+            return jsonify({
+                "error": "appsheet update fail",
+                "appsheet_status": app_status,
+                "appsheet_response": app_response[:500],
+                "id": row_id,
+                "project": project,
+                "volume": volume_text
+            }), 500
 
         base_url = request.host_url.rstrip("/")
 
@@ -1004,6 +1060,11 @@ def predict():
 
     except Exception:
         print(traceback.format_exc())
+
+        if row_id:
+            with lock:
+                processed_ids.pop(row_id, None)
+
         return jsonify({"error": "server error"}), 500
 
 
