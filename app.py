@@ -7,6 +7,7 @@ import time
 import threading
 import os
 import json
+from urllib.parse import quote
 
 app = Flask(__name__)
 
@@ -17,6 +18,7 @@ app = Flask(__name__)
 APP_ID = "5ebec09a-62dd-4fa9-8f14-830fb104518f"
 ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
 TABLE_NAME = "Data TFR"
+
 
 
 # =========================
@@ -32,8 +34,8 @@ os.makedirs(DEBUG_DIR, exist_ok=True)
 processed_ids = {}
 lock = threading.Lock()
 
-PROCESSED_ID_TTL_SECONDS = 10 * 60   # 10 นาที
-MAX_PROCESSED_IDS = 1000             # กัน memory โตผิดปกติ
+PROCESSED_ID_TTL_SECONDS = 10 * 60
+MAX_PROCESSED_IDS = 1000
 
 
 def cleanup_processed_ids():
@@ -79,10 +81,10 @@ def normalize_text(value):
 
 def extract_url(value):
     """
-    รองรับทั้ง:
+    รองรับ:
     - https://...
     - {"Url":"https://..."}
-    - {'Url': 'https://...'}
+    - {"url":"https://..."}
     """
     if value is None:
         return ""
@@ -289,9 +291,6 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
         cv2.COLOR_LAB2BGR
     )
 
-    # =========================
-    # COLOR SPACE
-    # =========================
     hsv = cv2.cvtColor(
         roi_norm,
         cv2.COLOR_BGR2HSV
@@ -316,7 +315,6 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
     # =========================
     # CARGO COLOR MASKS
     # =========================
-
     green_mask = cv2.inRange(
         hsv,
         (35, 45, 45),
@@ -811,7 +809,9 @@ def gen_fillrate_inbound(img, debug=True, return_empty=False, side_name="inbound
 # =========================
 def update_appsheet(row_id, volume_text):
 
-    url = f"https://api.appsheet.com/api/v2/apps/{APP_ID}/tables/{TABLE_NAME}/Action"
+    table_name_encoded = quote(TABLE_NAME, safe="")
+
+    url = f"https://api.appsheet.com/api/v2/apps/{APP_ID}/tables/{table_name_encoded}/Action"
 
     headers = {
         "ApplicationAccessKey": ACCESS_KEY,
@@ -829,25 +829,44 @@ def update_appsheet(row_id, volume_text):
         ]
     }
 
-    try:
-        print("APPSHEET UPDATE URL:", url)
-        print("APPSHEET UPDATE PAYLOAD:", payload)
+    max_retries = 3
 
-        r = requests.post(
-            url,
-            json=payload,
-            headers=headers,
-            timeout=20
-        )
+    for attempt in range(1, max_retries + 1):
 
-        print("APPSHEET STATUS:", r.status_code)
-        print("APPSHEET RESPONSE:", r.text[:500])
+        try:
+            print(f"APPSHEET UPDATE ATTEMPT: {attempt}/{max_retries}")
+            print("APPSHEET UPDATE URL:", url)
+            print("APPSHEET UPDATE PAYLOAD:", payload)
 
-        return r.status_code, r.text
+            r = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=(10, 90)
+            )
 
-    except Exception as e:
-        print("APPSHEET ERROR:", e)
-        return 500, str(e)
+            print("APPSHEET STATUS:", r.status_code)
+            print("APPSHEET RESPONSE:", r.text[:500])
+
+            return r.status_code, r.text
+
+        except requests.exceptions.Timeout as e:
+            print(f"APPSHEET TIMEOUT ATTEMPT {attempt}:", e)
+
+            if attempt < max_retries:
+                time.sleep(3)
+                continue
+
+            return 504, str(e)
+
+        except Exception as e:
+            print(f"APPSHEET ERROR ATTEMPT {attempt}:", e)
+
+            if attempt < max_retries:
+                time.sleep(3)
+                continue
+
+            return 500, str(e)
 
 
 # =========================
@@ -960,9 +979,6 @@ def predict():
 
         project_key = project.lower()
 
-        # =========================
-        # GET LINKS
-        # =========================
         image_url_raw = get_first_value(
             data,
             [
@@ -1027,8 +1043,17 @@ def predict():
         print("LINK LEFT:", left_url)
         print("LINK RIGHT:", right_url)
 
-        is_inbound = project_key == "inbound"
-        is_outbound = project_key == "outbound"
+        has_left_right = bool(left_url) and bool(right_url)
+
+        is_inbound = (
+            project_key == "inbound"
+            or has_left_right
+        )
+
+        is_outbound = (
+            project_key == "outbound"
+            and not is_inbound
+        )
 
         print("ROUTING CHECK:", {
             "is_inbound": is_inbound,
