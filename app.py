@@ -6,6 +6,7 @@ import traceback
 import time
 import threading
 import os
+import json
 
 app = Flask(__name__)
 
@@ -31,8 +32,6 @@ os.makedirs(DEBUG_DIR, exist_ok=True)
 processed_ids = {}
 lock = threading.Lock()
 
-# เก็บ row_id ไว้กันยิงซ้ำชั่วคราวเท่านั้น
-# ครบเวลาแล้วจะถูกลบออก เพื่อไม่ให้ memory โตไม่จำกัด
 PROCESSED_ID_TTL_SECONDS = 10 * 60   # 10 นาที
 MAX_PROCESSED_IDS = 1000             # กัน memory โตผิดปกติ
 
@@ -59,6 +58,79 @@ def cleanup_processed_ids():
 
         for row_id, _ in sorted_items[:overflow]:
             processed_ids.pop(row_id, None)
+
+
+# =========================
+# PAYLOAD HELPERS
+# =========================
+def get_first_value(data, keys):
+    for key in keys:
+        value = data.get(key)
+
+        if value is not None and str(value).strip() != "":
+            return value
+
+    return ""
+
+
+def normalize_text(value):
+    return str(value or "").strip()
+
+
+def extract_url(value):
+    """
+    รองรับทั้ง:
+    - https://...
+    - {"Url":"https://..."}
+    - {'Url': 'https://...'}
+    """
+    if value is None:
+        return ""
+
+    text = str(value).strip()
+
+    if not text:
+        return ""
+
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+
+    try:
+        obj = json.loads(text)
+
+        if isinstance(obj, dict):
+            url = obj.get("Url") or obj.get("url")
+
+            if url:
+                return str(url).strip()
+
+    except Exception:
+        pass
+
+    marker = "https://"
+
+    if marker in text:
+        start = text.find(marker)
+
+        end_candidates = [
+            text.find('"', start),
+            text.find("'", start),
+            text.find(",", start),
+            text.find("}", start)
+        ]
+
+        end_candidates = [
+            i for i in end_candidates
+            if i > start
+        ]
+
+        if end_candidates:
+            end = min(end_candidates)
+            return text[start:end].strip()
+
+        return text[start:].strip()
+
+    return text
 
 
 # =========================
@@ -133,7 +205,6 @@ def clean_mask(mask, min_area_ratio=0.002):
 
 # =========================
 # OUTBOUND FILLRATE MODEL
-# เดิมคือ gen_volume()
 # =========================
 def gen_fillrate_outbound(img, debug=True, return_empty=False):
 
@@ -189,7 +260,6 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
 
     # =========================
     # CONTAINER MASK
-    # ใช้ ROI ทั้งหมดเป็นพื้นที่ภายในตู้
     # =========================
     container_mask = np.full(
         (rh, rw),
@@ -477,7 +547,7 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
     cargo_mask = filtered_mask
 
     # =========================
-    # FALLBACK ถ้า cargo กินภาพเยอะผิดปกติ
+    # FALLBACK
     # =========================
     raw_cargo_ratio = cv2.countNonZero(cargo_mask) / float(container_mask.size)
 
@@ -518,7 +588,7 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
         raw_cargo_ratio = cv2.countNonZero(cargo_mask) / float(container_mask.size)
 
     # =========================
-    # EMPTY MASK = CONTAINER - CARGO
+    # EMPTY MASK
     # =========================
     empty_mask = cv2.bitwise_and(
         container_mask,
@@ -616,14 +686,12 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
 
         color_layer = roi_norm.copy()
 
-        # GREEN = cargo
         color_layer[cargo_mask > 0] = (
             0,
             255,
             0
         )
 
-        # BLUE = empty
         color_layer[empty_mask > 0] = (
             255,
             0,
@@ -712,10 +780,6 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
 
 # =========================
 # INBOUND FILLRATE MODEL
-# เดิมคือ gen_pallet()
-# =========================
-# =========================
-# INBOUND FILLRATE MODEL
 # =========================
 def gen_fillrate_inbound(img, debug=True, return_empty=False, side_name="inbound"):
 
@@ -740,6 +804,7 @@ def gen_fillrate_inbound(img, debug=True, return_empty=False, side_name="inbound
         print(f"ERROR GEN FILLRATE INBOUND: {side_name}")
         print(traceback.format_exc())
         return 0
+
 
 # =========================
 # UPDATE APPSHEET
@@ -879,17 +944,70 @@ def predict():
         if not data:
             return jsonify({"error": "no json"}), 400
 
-        row_id = data.get("id")
-        project = str(data.get("project", "")).strip()
+        row_id = normalize_text(
+            get_first_value(
+                data,
+                ["id", "ID", "Id"]
+            )
+        )
 
-        # Outbound image
-        image_url = data.get("link")
+        project = normalize_text(
+            get_first_value(
+                data,
+                ["project", "Project", "PROJECT"]
+            )
+        )
 
-        # Inbound images
-        left_url = data.get("link Left")
-        right_url = data.get("link Right")
+        project_key = project.lower()
 
-        # optional
+        # =========================
+        # GET LINKS
+        # =========================
+        image_url_raw = get_first_value(
+            data,
+            [
+                "link",
+                "Link",
+                "LINK",
+                "rear_link",
+                "Rear Link",
+                "link Rear",
+                "Link Rear"
+            ]
+        )
+
+        left_url_raw = get_first_value(
+            data,
+            [
+                "link Left",
+                "Link Left",
+                "LINK LEFT",
+                "link left",
+                "left_link",
+                "link_left",
+                "Left Link",
+                "Photo Left Link"
+            ]
+        )
+
+        right_url_raw = get_first_value(
+            data,
+            [
+                "link Right",
+                "Link Right",
+                "LINK RIGHT",
+                "link right",
+                "right_link",
+                "link_right",
+                "Right Link",
+                "Photo Right Link"
+            ]
+        )
+
+        image_url = extract_url(image_url_raw)
+        left_url = extract_url(left_url_raw)
+        right_url = extract_url(right_url_raw)
+
         debug = bool(data.get("debug", True))
         return_empty = bool(data.get("return_empty", False))
 
@@ -900,10 +1018,25 @@ def predict():
             return jsonify({"error": "missing project"}), 400
 
         print("ROW ID:", row_id)
-        print("PROJECT:", project)
+        print("PROJECT RAW:", project)
+        print("PROJECT KEY:", project_key)
+        print("LINK RAW:", image_url_raw)
+        print("LINK LEFT RAW:", left_url_raw)
+        print("LINK RIGHT RAW:", right_url_raw)
         print("LINK:", image_url)
         print("LINK LEFT:", left_url)
         print("LINK RIGHT:", right_url)
+
+        is_inbound = project_key == "inbound"
+        is_outbound = project_key == "outbound"
+
+        print("ROUTING CHECK:", {
+            "is_inbound": is_inbound,
+            "is_outbound": is_outbound,
+            "has_link": bool(image_url),
+            "has_left": bool(left_url),
+            "has_right": bool(right_url)
+        })
 
         # =========================
         # DUPLICATE LOCK
@@ -922,7 +1055,7 @@ def predict():
         # =========================
         # PROJECT = INBOUND
         # =========================
-        if project == "Inbound":
+        if is_inbound:
 
             if not left_url or not right_url:
                 with lock:
@@ -930,10 +1063,16 @@ def predict():
 
                 return jsonify({
                     "error": "missing inbound images",
+                    "message": "project is Inbound but link Left or link Right is empty",
                     "required": ["link Left", "link Right"],
+                    "project": project,
+                    "link Left raw": left_url_raw,
+                    "link Right raw": right_url_raw,
                     "link Left": left_url,
                     "link Right": right_url
                 }), 400
+
+            print("DOWNLOAD INBOUND LEFT:", left_url)
 
             img_left = download_image(left_url)
 
@@ -945,6 +1084,8 @@ def predict():
                     "error": "left image fail",
                     "link Left": left_url
                 }), 400
+
+            print("DOWNLOAD INBOUND RIGHT:", right_url)
 
             img_right = download_image(right_url)
 
@@ -986,7 +1127,7 @@ def predict():
         # =========================
         # PROJECT = OUTBOUND
         # =========================
-        elif project == "Outbound":
+        elif is_outbound:
 
             if not image_url:
                 with lock:
@@ -994,8 +1135,12 @@ def predict():
 
                 return jsonify({
                     "error": "missing outbound image",
-                    "required": ["link"]
+                    "required": ["link"],
+                    "link raw": image_url_raw,
+                    "link": image_url
                 }), 400
+
+            print("DOWNLOAD OUTBOUND:", image_url)
 
             img = download_image(image_url)
 
@@ -1032,6 +1177,7 @@ def predict():
             return jsonify({
                 "error": "invalid project",
                 "project": project,
+                "project_key": project_key,
                 "allowed": ["Inbound", "Outbound"]
             }), 400
 
@@ -1066,6 +1212,10 @@ def predict():
             "volume": volume_text,
             "mode": mode,
             "debug": debug,
+            "inbound": {
+                "left_link": left_url,
+                "right_link": right_url
+            } if is_inbound else None,
             "debug_urls": {
                 "overlay": f"{base_url}/debug/debug_overlay.jpg",
                 "overlay_light": f"{base_url}/debug/debug_overlay_light.jpg",
