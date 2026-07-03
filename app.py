@@ -245,7 +245,6 @@ def gen_fillrate_outbound(
     # =========================
     if roi_mode == "inbound_left":
         # Inbound wide ROI
-        # ครอบพื้นที่งานให้กว้างขึ้น เพื่อไม่ตัดสินค้าชั้นบน/ล่าง
         y1 = int(h * 0.08)
         y2 = int(h * 0.95)
         x1 = int(w * 0.00)
@@ -412,6 +411,82 @@ def gen_fillrate_outbound(
 
     else:
         gray_wall_mask = np.zeros_like(gray)
+
+    # =========================
+    # INBOUND BACKGROUND SUPPRESSION
+    # ตัดหลังคา / ผนัง / พื้นที่เรียบ ที่ไม่ใช่สินค้า
+    # =========================
+    if roi_mode in ["inbound_left", "inbound_right"]:
+
+        # 1) ตัดแถบหลังคาด้านบนของ ROI
+        ceiling_mask = np.zeros_like(gray)
+
+        ceiling_cut = int(rh * 0.18)
+        ceiling_mask[:ceiling_cut, :] = 255
+
+        # 2) พื้นที่เรียบ / ผนัง / หลังคา มักมี edge density ต่ำ
+        edge_for_bg = cv2.Canny(
+            gray_blur,
+            50,
+            140
+        )
+
+        edge_density_bg = cv2.blur(
+            edge_for_bg.astype(np.float32),
+            (21, 21)
+        )
+
+        smooth_mask = cv2.inRange(
+            edge_density_bg,
+            0,
+            8
+        )
+
+        # 3) สีอิ่มตัวต่ำหรือเทาอมเขียวที่มักเป็นผนัง/หลังคา
+        low_sat_mask = cv2.inRange(
+            s_channel,
+            0,
+            70
+        )
+
+        smooth_wall_mask = cv2.bitwise_and(
+            smooth_mask,
+            low_sat_mask
+        )
+
+        inbound_background_mask = cv2.bitwise_or(
+            gray_wall_mask,
+            smooth_wall_mask
+        )
+
+        inbound_background_mask = cv2.bitwise_or(
+            inbound_background_mask,
+            ceiling_mask
+        )
+
+        bg_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (9, 9)
+        )
+
+        inbound_background_mask = cv2.morphologyEx(
+            inbound_background_mask,
+            cv2.MORPH_CLOSE,
+            bg_kernel,
+            iterations=1
+        )
+
+        inbound_background_ratio = cv2.countNonZero(
+            inbound_background_mask
+        ) / float(inbound_background_mask.size)
+
+        print(
+            f"INBOUND BACKGROUND MASK "
+            f"RATIO={inbound_background_ratio:.3f}"
+        )
+
+    else:
+        inbound_background_mask = np.zeros_like(gray)
 
     # =========================
     # GREEN PALLET / GREEN CARGO
@@ -594,45 +669,45 @@ def gen_fillrate_outbound(
     )
 
     # =========================
-    # REMOVE GRAY WALL FOR INBOUND
+    # REMOVE BACKGROUND FOR INBOUND
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
-        not_gray_wall_mask = cv2.bitwise_not(gray_wall_mask)
+        not_background_mask = cv2.bitwise_not(inbound_background_mask)
 
         green_mask = cv2.bitwise_and(
             green_mask,
-            not_gray_wall_mask
+            not_background_mask
         )
 
         brown_mask = cv2.bitwise_and(
             brown_mask,
-            not_gray_wall_mask
+            not_background_mask
         )
 
         cream_mask = cv2.bitwise_and(
             cream_mask,
-            not_gray_wall_mask
+            not_background_mask
         )
 
         blue_mask = cv2.bitwise_and(
             blue_mask,
-            not_gray_wall_mask
+            not_background_mask
         )
 
         red_mask = cv2.bitwise_and(
             red_mask,
-            not_gray_wall_mask
+            not_background_mask
         )
 
         dark_mask = cv2.bitwise_and(
             dark_mask,
-            not_gray_wall_mask
+            not_background_mask
         )
 
         texture_mask = cv2.bitwise_and(
             texture_mask,
-            not_gray_wall_mask
+            not_background_mask
         )
 
     # =========================
@@ -685,7 +760,6 @@ def gen_fillrate_outbound(
     # =========================
     # INBOUND TEXTURE FILTER
     # Texture ต้องอยู่ใกล้พื้นที่สีพาเลท/สินค้า
-    # ไม่บังคับให้ overlap เป๊ะ เพราะตะแกรง/ลังมีช่องว่างเยอะ
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
@@ -739,13 +813,13 @@ def gen_fillrate_outbound(
     )
 
     # =========================
-    # REMOVE GRAY WALL AGAIN AFTER COMBINE
+    # REMOVE BACKGROUND AGAIN AFTER COMBINE
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
         cargo_mask = cv2.bitwise_and(
             cargo_mask,
-            cv2.bitwise_not(gray_wall_mask)
+            cv2.bitwise_not(inbound_background_mask)
         )
 
     # =========================
@@ -840,7 +914,7 @@ def gen_fillrate_outbound(
         if roi_mode in ["inbound_left", "inbound_right"]:
             cargo_mask = cv2.bitwise_and(
                 cargo_mask,
-                cv2.bitwise_not(gray_wall_mask)
+                cv2.bitwise_not(inbound_background_mask)
             )
 
         cargo_mask = cv2.morphologyEx(
