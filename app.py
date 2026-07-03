@@ -244,24 +244,31 @@ def gen_fillrate_outbound(
     # ROI
     # =========================
     if roi_mode == "inbound_left":
+        # Inbound Left
+        # ตัดหลังคา/แสงด้านบนออกมากขึ้น
+        # เน้นพื้นที่กล่องและชั้นวาง
         roi = img[
-            int(h * 0.22):int(h * 0.72),
-            int(w * 0.02):int(w * 0.86)
+            int(h * 0.30):int(h * 0.78),
+            int(w * 0.06):int(w * 0.92)
         ]
 
     elif roi_mode == "inbound_right":
+        # Inbound Right
+        # ตัดหลังคาและผนังเทาด้านขวาออก
         roi = img[
-            int(h * 0.28):int(h * 0.72),
-            int(w * 0.02):int(w * 0.68)
+            int(h * 0.34):int(h * 0.78),
+            int(w * 0.04):int(w * 0.72)
         ]
 
     elif view_type == "rear":
+        # Outbound rear
         roi = img[
             int(h * 0.18):int(h * 0.82),
             int(w * 0.15):int(w * 0.85)
         ]
 
     else:
+        # Outbound side
         roi = img[
             int(h * 0.25):int(h * 0.75),
             int(w * 0.15):int(w * 0.85)
@@ -390,24 +397,33 @@ def gen_fillrate_outbound(
     # =========================
     # CARGO COLOR MASKS
     # =========================
+
+    # GREEN MASK
     green_mask = cv2.inRange(
         hsv,
         (35, 45, 45),
         (95, 255, 255)
     )
 
+    # Inbound ปิดสีเขียว เพราะมักเป็นแสง/เงา/โครง/ผ้าใบ ไม่ใช่สินค้า
+    if roi_mode in ["inbound_left", "inbound_right"]:
+        green_mask = np.zeros_like(green_mask)
+
+    # BROWN CARTON / WOOD / PALLET
     brown_mask = cv2.inRange(
         hsv,
         (5, 45, 45),
         (35, 255, 230)
     )
 
+    # BLUE / CYAN CRATE / FRAME
     blue_mask = cv2.inRange(
         hsv,
         (85, 35, 35),
         (125, 255, 255)
     )
 
+    # RED CARGO
     red_mask_1 = cv2.inRange(
         hsv,
         (0, 60, 50),
@@ -425,11 +441,16 @@ def gen_fillrate_outbound(
         red_mask_2
     )
 
+    # DARK MASK
     dark_mask = cv2.inRange(
         hsv,
         (0, 55, 0),
         (180, 255, 65)
     )
+
+    # Inbound ปิด dark_mask เพื่อลดการจับหลังคา/เงา/พื้นที่มืด
+    if roi_mode in ["inbound_left", "inbound_right"]:
+        dark_mask = np.zeros_like(dark_mask)
 
     # =========================
     # TEXTURE MASK
@@ -572,6 +593,22 @@ def gen_fillrate_outbound(
         color_cargo_mask,
         red_mask
     )
+
+    # =========================
+    # INBOUND TEXTURE FILTER
+    # ลดการจับ texture จากหลังคา/ผนัง
+    # ให้ texture เกาะกับ brown หรือ blue เท่านั้น
+    # =========================
+    if roi_mode in ["inbound_left", "inbound_right"]:
+        inbound_texture_allow = cv2.bitwise_or(
+            brown_mask,
+            blue_mask
+        )
+
+        texture_mask = cv2.bitwise_and(
+            texture_mask,
+            inbound_texture_allow
+        )
 
     # =========================
     # COMBINE CARGO
