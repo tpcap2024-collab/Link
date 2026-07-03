@@ -212,7 +212,8 @@ def gen_fillrate_outbound(
     img,
     debug=True,
     return_empty=False,
-    debug_filename="debug_overlay.jpg"
+    debug_filename="debug_overlay.jpg",
+    roi_mode="outbound"
 ):
 
     if img is None or img.size == 0:
@@ -249,12 +250,31 @@ def gen_fillrate_outbound(
     # =========================
     # ROI
     # =========================
-    if view_type == "rear":
+    if roi_mode == "inbound_left":
+        # Inbound Left: จับพื้นที่สินค้าด้านข้างรถ
+        # ตัดด้านล่างที่เป็นล้อ/คาน/กันชนออก
+        roi = img[
+            int(h * 0.08):int(h * 0.72),
+            int(w * 0.06):int(w * 0.96)
+        ]
+
+    elif roi_mode == "inbound_right":
+        # Inbound Right: จับพื้นที่สินค้าด้านข้างรถ
+        # เปิดด้านซ้ายเพิ่มเล็กน้อย เพราะสินค้ามักเริ่มใกล้ขอบภาพ
+        roi = img[
+            int(h * 0.08):int(h * 0.72),
+            int(w * 0.04):int(w * 0.94)
+        ]
+
+    elif view_type == "rear":
+        # Outbound / Rear view
         roi = img[
             int(h * 0.18):int(h * 0.82),
             int(w * 0.15):int(w * 0.85)
         ]
+
     else:
+        # Outbound / Side view เดิม
         roi = img[
             int(h * 0.25):int(h * 0.75),
             int(w * 0.15):int(w * 0.85)
@@ -743,7 +763,6 @@ def gen_fillrate_outbound(
 
     return output_volume
 
-
 # =========================
 # INBOUND FILLRATE MODEL
 # =========================
@@ -758,16 +777,22 @@ def gen_fillrate_inbound(img, debug=True, return_empty=False, side_name="inbound
     try:
         if side_name == "left":
             debug_filename = "debug_left_overlay.jpg"
+            roi_mode = "inbound_left"
+
         elif side_name == "right":
             debug_filename = "debug_right_overlay.jpg"
+            roi_mode = "inbound_right"
+
         else:
             debug_filename = "debug_overlay.jpg"
+            roi_mode = "outbound"
 
         result = gen_fillrate_outbound(
             img,
             debug=debug,
             return_empty=return_empty,
-            debug_filename=debug_filename
+            debug_filename=debug_filename,
+            roi_mode=roi_mode
         )
 
         print(f"END GEN FILLRATE INBOUND: {side_name} RESULT={result}%")
