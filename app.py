@@ -714,14 +714,32 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
 # INBOUND FILLRATE MODEL
 # เดิมคือ gen_pallet()
 # =========================
-def gen_fillrate_inbound(img, debug=True, return_empty=False):
+# =========================
+# INBOUND FILLRATE MODEL
+# =========================
+def gen_fillrate_inbound(img, debug=True, return_empty=False, side_name="inbound"):
 
-    return gen_fillrate_outbound(
-        img,
-        debug=debug,
-        return_empty=return_empty
-    )
+    print(f"START GEN FILLRATE INBOUND: {side_name}")
 
+    if img is None or img.size == 0:
+        print(f"INBOUND IMAGE EMPTY: {side_name}")
+        return 0
+
+    try:
+        result = gen_fillrate_outbound(
+            img,
+            debug=debug,
+            return_empty=return_empty
+        )
+
+        print(f"END GEN FILLRATE INBOUND: {side_name} RESULT={result}%")
+
+        return result
+
+    except Exception:
+        print(f"ERROR GEN FILLRATE INBOUND: {side_name}")
+        print(traceback.format_exc())
+        return 0
 
 # =========================
 # UPDATE APPSHEET
@@ -942,13 +960,15 @@ def predict():
             left_volume = gen_fillrate_inbound(
                 img_left,
                 debug=debug,
-                return_empty=return_empty
+                return_empty=return_empty,
+                side_name="left"
             )
 
             right_volume = gen_fillrate_inbound(
                 img_right,
                 debug=debug,
-                return_empty=return_empty
+                return_empty=return_empty,
+                side_name="right"
             )
 
             volume = int(round(((left_volume + right_volume) / 2) / 5) * 5)
