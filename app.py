@@ -208,7 +208,12 @@ def clean_mask(mask, min_area_ratio=0.002):
 # =========================
 # OUTBOUND FILLRATE MODEL
 # =========================
-def gen_fillrate_outbound(img, debug=True, return_empty=False):
+def gen_fillrate_outbound(
+    img,
+    debug=True,
+    return_empty=False,
+    debug_filename="debug_overlay.jpg"
+):
 
     if img is None or img.size == 0:
         return 0
@@ -678,18 +683,20 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
     )
 
     # =========================
-    # DEBUG OUTPUT
+    # DEBUG OUTPUT: SAVE OVERLAY ONLY
     # =========================
     if debug:
 
         color_layer = roi_norm.copy()
 
+        # GREEN = cargo
         color_layer[cargo_mask > 0] = (
             0,
             255,
             0
         )
 
+        # BLUE = empty
         color_layer[empty_mask > 0] = (
             255,
             0,
@@ -732,46 +739,7 @@ def gen_fillrate_outbound(img, debug=True, return_empty=False):
             1
         )
 
-        overlay_light = cv2.addWeighted(
-            roi_norm,
-            0.92,
-            color_layer,
-            0.08,
-            0
-        )
-
-        overlay_contour = roi_norm.copy()
-
-        cv2.drawContours(
-            overlay_contour,
-            cargo_contours,
-            -1,
-            (0, 255, 255),
-            2
-        )
-
-        cv2.drawContours(
-            overlay_contour,
-            empty_contours,
-            -1,
-            (255, 0, 0),
-            1
-        )
-
-        save_debug("debug_original.jpg", roi)
-        save_debug("debug_normalized.jpg", roi_norm)
-        save_debug("debug_container.jpg", container_mask)
-        save_debug("debug_cargo.jpg", cargo_mask)
-        save_debug("debug_empty.jpg", empty_mask)
-        save_debug("debug_overlay.jpg", overlay)
-        save_debug("debug_overlay_light.jpg", overlay_light)
-        save_debug("debug_overlay_contour.jpg", overlay_contour)
-
-        save_debug("debug_green.jpg", green_mask)
-        save_debug("debug_brown.jpg", brown_mask)
-        save_debug("debug_blue.jpg", blue_mask)
-        save_debug("debug_dark.jpg", dark_mask)
-        save_debug("debug_texture.jpg", texture_mask)
+        save_debug(debug_filename, overlay)
 
     return output_volume
 
@@ -788,10 +756,18 @@ def gen_fillrate_inbound(img, debug=True, return_empty=False, side_name="inbound
         return 0
 
     try:
+        if side_name == "left":
+            debug_filename = "debug_left_overlay.jpg"
+        elif side_name == "right":
+            debug_filename = "debug_right_overlay.jpg"
+        else:
+            debug_filename = "debug_overlay.jpg"
+
         result = gen_fillrate_outbound(
             img,
             debug=debug,
-            return_empty=return_empty
+            return_empty=return_empty,
+            debug_filename=debug_filename
         )
 
         print(f"END GEN FILLRATE INBOUND: {side_name} RESULT={result}%")
@@ -829,44 +805,29 @@ def update_appsheet(row_id, volume_text):
         ]
     }
 
-    max_retries = 3
+    try:
+        print("APPSHEET UPDATE URL:", url)
+        print("APPSHEET UPDATE PAYLOAD:", payload)
 
-    for attempt in range(1, max_retries + 1):
+        r = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=20
+        )
 
-        try:
-            print(f"APPSHEET UPDATE ATTEMPT: {attempt}/{max_retries}")
-            print("APPSHEET UPDATE URL:", url)
-            print("APPSHEET UPDATE PAYLOAD:", payload)
+        print("APPSHEET STATUS:", r.status_code)
+        print("APPSHEET RESPONSE:", r.text[:500])
 
-            r = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=(10, 90)
-            )
+        return r.status_code, r.text
 
-            print("APPSHEET STATUS:", r.status_code)
-            print("APPSHEET RESPONSE:", r.text[:500])
+    except requests.exceptions.Timeout as e:
+        print("APPSHEET TIMEOUT:", e)
+        return 504, str(e)
 
-            return r.status_code, r.text
-
-        except requests.exceptions.Timeout as e:
-            print(f"APPSHEET TIMEOUT ATTEMPT {attempt}:", e)
-
-            if attempt < max_retries:
-                time.sleep(3)
-                continue
-
-            return 504, str(e)
-
-        except Exception as e:
-            print(f"APPSHEET ERROR ATTEMPT {attempt}:", e)
-
-            if attempt < max_retries:
-                time.sleep(3)
-                continue
-
-            return 500, str(e)
+    except Exception as e:
+        print("APPSHEET ERROR:", e)
+        return 500, str(e)
 
 
 # =========================
@@ -887,19 +848,9 @@ def health():
 def debug_file(filename):
 
     allowed = {
-        "debug_original.jpg",
-        "debug_normalized.jpg",
-        "debug_container.jpg",
-        "debug_cargo.jpg",
-        "debug_empty.jpg",
         "debug_overlay.jpg",
-        "debug_overlay_light.jpg",
-        "debug_overlay_contour.jpg",
-        "debug_green.jpg",
-        "debug_brown.jpg",
-        "debug_blue.jpg",
-        "debug_dark.jpg",
-        "debug_texture.jpg"
+        "debug_left_overlay.jpg",
+        "debug_right_overlay.jpg"
     }
 
     if filename not in allowed:
@@ -917,19 +868,9 @@ def debug_file(filename):
 def debug_list():
 
     files = [
-        "debug_original.jpg",
-        "debug_normalized.jpg",
-        "debug_container.jpg",
-        "debug_cargo.jpg",
-        "debug_empty.jpg",
         "debug_overlay.jpg",
-        "debug_overlay_light.jpg",
-        "debug_overlay_contour.jpg",
-        "debug_green.jpg",
-        "debug_brown.jpg",
-        "debug_blue.jpg",
-        "debug_dark.jpg",
-        "debug_texture.jpg"
+        "debug_left_overlay.jpg",
+        "debug_right_overlay.jpg"
     ]
 
     base_url = request.host_url.rstrip("/")
@@ -1181,7 +1122,8 @@ def predict():
             volume = gen_fillrate_outbound(
                 img,
                 debug=debug,
-                return_empty=return_empty
+                return_empty=return_empty,
+                debug_filename="debug_overlay.jpg"
             )
 
             mode = "outbound_fillrate"
@@ -1243,12 +1185,8 @@ def predict():
             } if is_inbound else None,
             "debug_urls": {
                 "overlay": f"{base_url}/debug/debug_overlay.jpg",
-                "overlay_light": f"{base_url}/debug/debug_overlay_light.jpg",
-                "overlay_contour": f"{base_url}/debug/debug_overlay_contour.jpg",
-                "cargo": f"{base_url}/debug/debug_cargo.jpg",
-                "empty": f"{base_url}/debug/debug_empty.jpg",
-                "container": f"{base_url}/debug/debug_container.jpg",
-                "blue": f"{base_url}/debug/debug_blue.jpg",
+                "left_overlay": f"{base_url}/debug/debug_left_overlay.jpg",
+                "right_overlay": f"{base_url}/debug/debug_right_overlay.jpg",
                 "list": f"{base_url}/debug-list"
             }
         })
