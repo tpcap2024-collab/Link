@@ -244,14 +244,12 @@ def gen_fillrate_outbound(
     # ROI
     # =========================
     if roi_mode == "inbound_left":
-        # Inbound Left
-        # ครอบพื้นที่บรรทุกด้านข้างให้พอดี
-        # ตัดหลังคาด้านบน และตัดล้อ/กันชนล่างออก
-        # เก็บผนังเทาไว้เป็น Empty
-        y1 = int(h * 0.23)
-        y2 = int(h * 0.88)
-        x1 = int(w * 0.03)
-        x2 = int(w * 0.98)
+        # Inbound wide ROI
+        # ครอบพื้นที่งานให้กว้างขึ้น เพื่อไม่ตัดสินค้าชั้นบน/ล่าง
+        y1 = int(h * 0.08)
+        y2 = int(h * 0.95)
+        x1 = int(w * 0.00)
+        x2 = int(w * 1.00)
 
         roi = img[
             y1:y2,
@@ -259,12 +257,11 @@ def gen_fillrate_outbound(
         ]
 
     elif roi_mode == "inbound_right":
-        # Inbound Right
-        # ใช้กรอบกว้างเพื่อเก็บพื้นที่ว่าง/ผนังเทาไว้คิด Empty
-        y1 = int(h * 0.23)
-        y2 = int(h * 0.88)
-        x1 = int(w * 0.02)
-        x2 = int(w * 0.98)
+        # Inbound wide ROI
+        y1 = int(h * 0.08)
+        y2 = int(h * 0.95)
+        x1 = int(w * 0.00)
+        x2 = int(w * 1.00)
 
         roi = img[
             y1:y2,
@@ -359,9 +356,9 @@ def gen_fillrate_outbound(
     s_mean = float(s_channel.mean())
 
     # =========================
-    # INBOUND GRAY WALL MASK
-    # ตัดสีเทา / ผนังตู้ / หลังคา / โครงสร้าง ออกจาก Cargo
-    # แต่ยังเหลืออยู่ใน Container เพื่อคิดเป็น Empty
+    # INBOUND GRAY WALL MASK - SOFTER
+    # ตัดเฉพาะเทาจริง / ผนังตู้
+    # ไม่ให้ไปตัดพาเลทสีครีม / ฟ้าอ่อน / เขียวอ่อน
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
@@ -376,38 +373,32 @@ def gen_fillrate_outbound(
         b_diff = np.abs(b_check.astype(np.int16) - 128)
 
         lab_gray_mask = np.where(
-            (l_check > 65) &
-            (a_diff < 14) &
-            (b_diff < 18),
+            (l_check > 78) &
+            (a_diff < 8) &
+            (b_diff < 10),
             255,
             0
         ).astype(np.uint8)
 
         hsv_gray_mask = cv2.inRange(
             hsv,
-            (0, 0, 55),
-            (180, 65, 245)
+            (0, 0, 70),
+            (180, 38, 245)
         )
 
-        gray_wall_mask = cv2.bitwise_or(
+        gray_wall_mask = cv2.bitwise_and(
             lab_gray_mask,
             hsv_gray_mask
         )
 
         gray_kernel = cv2.getStructuringElement(
             cv2.MORPH_RECT,
-            (7, 7)
+            (5, 5)
         )
 
         gray_wall_mask = cv2.morphologyEx(
             gray_wall_mask,
             cv2.MORPH_CLOSE,
-            gray_kernel,
-            iterations=1
-        )
-
-        gray_wall_mask = cv2.dilate(
-            gray_wall_mask,
             gray_kernel,
             iterations=1
         )
@@ -428,8 +419,8 @@ def gen_fillrate_outbound(
     if roi_mode in ["inbound_left", "inbound_right"]:
         green_mask = cv2.inRange(
             hsv,
-            (40, 60, 55),
-            (85, 255, 230)
+            (35, 35, 45),
+            (95, 255, 255)
         )
     else:
         green_mask = cv2.inRange(
@@ -441,11 +432,18 @@ def gen_fillrate_outbound(
     # =========================
     # BROWN CARTON / WOOD / PALLET
     # =========================
-    brown_mask = cv2.inRange(
-        hsv,
-        (5, 45, 45),
-        (35, 255, 230)
-    )
+    if roi_mode in ["inbound_left", "inbound_right"]:
+        brown_mask = cv2.inRange(
+            hsv,
+            (4, 35, 45),
+            (38, 255, 245)
+        )
+    else:
+        brown_mask = cv2.inRange(
+            hsv,
+            (5, 45, 45),
+            (35, 255, 230)
+        )
 
     # =========================
     # CREAM / BEIGE PALLET / LIGHT CARTON
@@ -453,8 +451,8 @@ def gen_fillrate_outbound(
     if roi_mode in ["inbound_left", "inbound_right"]:
         cream_mask = cv2.inRange(
             hsv,
-            (15, 20, 85),
-            (45, 130, 255)
+            (10, 10, 80),
+            (48, 175, 255)
         )
     else:
         cream_mask = np.zeros_like(brown_mask)
@@ -465,8 +463,8 @@ def gen_fillrate_outbound(
     if roi_mode in ["inbound_left", "inbound_right"]:
         blue_mask = cv2.inRange(
             hsv,
-            (85, 30, 45),
-            (130, 255, 255)
+            (82, 18, 45),
+            (135, 255, 255)
         )
     else:
         blue_mask = cv2.inRange(
@@ -480,13 +478,13 @@ def gen_fillrate_outbound(
     # =========================
     red_mask_1 = cv2.inRange(
         hsv,
-        (0, 60, 50),
+        (0, 55, 45),
         (12, 255, 255)
     )
 
     red_mask_2 = cv2.inRange(
         hsv,
-        (165, 60, 50),
+        (165, 55, 45),
         (180, 255, 255)
     )
 
@@ -504,7 +502,7 @@ def gen_fillrate_outbound(
         (180, 255, 65)
     )
 
-    # Inbound ปิด dark_mask เพื่อลดการจับเงา/หลังคา/พื้นที่มืด
+    # Inbound ปิด dark_mask เพื่อลดการจับเงา / หลังคา / ผนังมืด
     if roi_mode in ["inbound_left", "inbound_right"]:
         dark_mask = np.zeros_like(dark_mask)
 
@@ -577,7 +575,7 @@ def gen_fillrate_outbound(
     )
 
     if roi_mode in ["inbound_left", "inbound_right"]:
-        top_cut_ratio = 0.03
+        top_cut_ratio = 0.00
     else:
         top_cut_ratio = 0.12 if view_type == "rear" else 0.16
 
@@ -661,29 +659,65 @@ def gen_fillrate_outbound(
     )
 
     # =========================
-    # INBOUND TEXTURE FILTER
-    # Texture ต้องเกาะกับสีพาเลท/สินค้าเท่านั้น
+    # INBOUND COLOR BOOST
+    # เติม mask สีให้เต็มขึ้น เพราะพาเลท/ตะแกรงมักมีช่องว่าง
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
-        inbound_texture_allow = cv2.bitwise_or(
-            green_mask,
-            brown_mask
+        inbound_color_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (7, 7)
         )
 
-        inbound_texture_allow = cv2.bitwise_or(
-            inbound_texture_allow,
-            cream_mask
+        color_cargo_mask = cv2.morphologyEx(
+            color_cargo_mask,
+            cv2.MORPH_CLOSE,
+            inbound_color_kernel,
+            iterations=2
         )
 
-        inbound_texture_allow = cv2.bitwise_or(
-            inbound_texture_allow,
-            blue_mask
+        color_cargo_mask = cv2.dilate(
+            color_cargo_mask,
+            inbound_color_kernel,
+            iterations=1
+        )
+
+    # =========================
+    # INBOUND TEXTURE FILTER
+    # Texture ต้องอยู่ใกล้พื้นที่สีพาเลท/สินค้า
+    # ไม่บังคับให้ overlap เป๊ะ เพราะตะแกรง/ลังมีช่องว่างเยอะ
+    # =========================
+    if roi_mode in ["inbound_left", "inbound_right"]:
+
+        texture_allow_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (21, 21)
+        )
+
+        inbound_texture_allow = cv2.dilate(
+            color_cargo_mask,
+            texture_allow_kernel,
+            iterations=1
         )
 
         texture_mask = cv2.bitwise_and(
             texture_mask,
             inbound_texture_allow
+        )
+
+        green_ratio = cv2.countNonZero(green_mask) / float(green_mask.size)
+        brown_ratio = cv2.countNonZero(brown_mask) / float(brown_mask.size)
+        cream_ratio = cv2.countNonZero(cream_mask) / float(cream_mask.size)
+        blue_ratio = cv2.countNonZero(blue_mask) / float(blue_mask.size)
+        color_ratio = cv2.countNonZero(color_cargo_mask) / float(color_cargo_mask.size)
+
+        print(
+            f"INBOUND COLOR RATIOS "
+            f"GREEN={green_ratio:.3f} "
+            f"BROWN={brown_ratio:.3f} "
+            f"CREAM={cream_ratio:.3f} "
+            f"BLUE={blue_ratio:.3f} "
+            f"COLOR={color_ratio:.3f}"
         )
 
     # =========================
