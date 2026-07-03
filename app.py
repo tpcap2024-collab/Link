@@ -215,8 +215,9 @@ def filter_inbound_pallet_groups(mask):
 
     filtered = np.zeros_like(mask)
 
-    min_area = h * w * 0.008
-    max_top_y = int(h * 0.18)
+    # ผ่อนลงเพื่อไม่ให้ตัดพาเลทที่เป็นเส้น/ช่องออกมากเกินไป
+    min_area = h * w * 0.003
+    max_top_y = int(h * 0.08)
 
     candidates = []
 
@@ -235,16 +236,20 @@ def filter_inbound_pallet_groups(mask):
 
         aspect = bw / float(bh)
 
-        # ตัดเส้นยาวบาง เช่น หลังคา / ขอบตู้ / เส้นผนัง
-        if bh < h * 0.06 and bw > w * 0.30:
+        # ตัดเส้นยาวบาง เช่น หลังคา / ขอบตู้
+        if bh < h * 0.05 and bw > w * 0.35:
+            continue
+
+        # ตัดเส้นยาวบางด้านล่าง เช่น คานรถ / กันชน / ขอบพื้น
+        if y > h * 0.82 and bh < h * 0.10 and bw > w * 0.20:
             continue
 
         # ตัด object ที่อยู่ด้านบนมากและมีขนาดไม่ใหญ่พอ
-        if y < max_top_y and area < h * w * 0.035:
+        if y < max_top_y and area < h * w * 0.030:
             continue
 
         # รูปทรงที่พอเป็นกลุ่มพาเลท / ตะแกรง / ลัง
-        if 0.18 <= aspect <= 9.00:
+        if 0.15 <= aspect <= 10.0:
             candidates.append((i, area, x, y, bw, bh))
 
     if not candidates:
@@ -265,9 +270,9 @@ def filter_inbound_pallet_groups(mask):
         bottom = y + bh
         center_x = x + bw / 2
 
-        vertical_close = abs(bottom - main_bottom) < h * 0.48
-        horizontal_close = abs(center_x - main_center_x) < w * 0.60
-        large_enough = area > h * w * 0.020
+        vertical_close = abs(bottom - main_bottom) < h * 0.55
+        horizontal_close = abs(center_x - main_center_x) < w * 0.70
+        large_enough = area > h * w * 0.012
 
         if i == main_label or large_enough or (vertical_close and horizontal_close):
             filtered[labels == i] = 255
@@ -289,11 +294,20 @@ def gen_fillrate_outbound(
     if img is None or img.size == 0:
         return 0
 
+    # =========================
+    # DETECT VIEW TYPE
+    # =========================
     orig_h, orig_w = img.shape[:2]
     view_type = "rear" if orig_h > orig_w else "side"
 
+    # =========================
+    # RESIZE
+    # =========================
     img = cv2.resize(img, (640, 480))
 
+    # =========================
+    # SIDE VIEW 4:3 -> 16:9
+    # =========================
     if view_type == "side":
         h, w = img.shape[:2]
         target_h = int(w * 9 / 16)
@@ -360,6 +374,9 @@ def gen_fillrate_outbound(
         dtype=np.uint8
     )
 
+    # =========================
+    # LIGHT NORMALIZATION
+    # =========================
     lab = cv2.cvtColor(
         roi,
         cv2.COLOR_BGR2LAB
@@ -399,6 +416,64 @@ def gen_fillrate_outbound(
 
     v_mean = float(v_channel.mean())
     s_mean = float(s_channel.mean())
+
+    # =========================
+    # INBOUND CREAM PROTECT MASK
+    # กันพาเลท/กล่องสีครีมไม่ให้ถูกลบเป็น wall/background
+    # =========================
+    if roi_mode in ["inbound_left", "inbound_right"]:
+
+        lab_for_cream = cv2.cvtColor(
+            roi_norm,
+            cv2.COLOR_BGR2LAB
+        )
+
+        l_cream, a_cream, b_cream = cv2.split(lab_for_cream)
+
+        hsv_cream_candidate = cv2.inRange(
+            hsv,
+            (10, 14, 95),
+            (50, 185, 255)
+        )
+
+        lab_cream_candidate = np.where(
+            (l_cream > 85) &
+            (a_cream > 118) &
+            (a_cream < 142) &
+            (b_cream > 132) &
+            (b_cream < 168),
+            255,
+            0
+        ).astype(np.uint8)
+
+        cream_protect_mask = cv2.bitwise_and(
+            hsv_cream_candidate,
+            lab_cream_candidate
+        )
+
+        cream_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (3, 3)
+        )
+
+        cream_protect_mask = cv2.morphologyEx(
+            cream_protect_mask,
+            cv2.MORPH_CLOSE,
+            cream_kernel,
+            iterations=1
+        )
+
+        cream_protect_ratio = cv2.countNonZero(
+            cream_protect_mask
+        ) / float(cream_protect_mask.size)
+
+        print(
+            f"INBOUND CREAM PROTECT "
+            f"RATIO={cream_protect_ratio:.3f}"
+        )
+
+    else:
+        cream_protect_mask = np.zeros_like(gray)
 
     # =========================
     # GRAY WALL MASK
@@ -446,6 +521,12 @@ def gen_fillrate_outbound(
             iterations=1
         )
 
+        # อย่าให้ gray wall mask ไปกินสีครีมจริง
+        gray_wall_mask = cv2.bitwise_and(
+            gray_wall_mask,
+            cv2.bitwise_not(cream_protect_mask)
+        )
+
         gray_wall_ratio = cv2.countNonZero(gray_wall_mask) / float(gray_wall_mask.size)
 
         print(
@@ -463,7 +544,7 @@ def gen_fillrate_outbound(
 
         ceiling_mask = np.zeros_like(gray)
 
-        ceiling_cut = int(rh * 0.18)
+        ceiling_cut = int(rh * 0.14)
         ceiling_mask[:ceiling_cut, :] = 255
 
         edge_for_bg = cv2.Canny(
@@ -480,13 +561,14 @@ def gen_fillrate_outbound(
         smooth_mask = cv2.inRange(
             edge_density_bg,
             0,
-            8
+            4
         )
 
+        # ลดจาก 70 เหลือ 45 เพื่อไม่ให้กินกล่อง/พาเลทสีครีม
         low_sat_mask = cv2.inRange(
             s_channel,
             0,
-            70
+            45
         )
 
         smooth_wall_mask = cv2.bitwise_and(
@@ -514,6 +596,12 @@ def gen_fillrate_outbound(
             cv2.MORPH_CLOSE,
             bg_kernel,
             iterations=1
+        )
+
+        # กันไม่ให้ background mask ลบกล่อง/พาเลทสีครีม
+        inbound_background_mask = cv2.bitwise_and(
+            inbound_background_mask,
+            cv2.bitwise_not(cream_protect_mask)
         )
 
         inbound_background_ratio = cv2.countNonZero(
@@ -558,11 +646,7 @@ def gen_fillrate_outbound(
         )
 
     if roi_mode in ["inbound_left", "inbound_right"]:
-        cream_mask = cv2.inRange(
-            hsv,
-            (10, 10, 80),
-            (48, 175, 255)
-        )
+        cream_mask = cream_protect_mask.copy()
     else:
         cream_mask = np.zeros_like(brown_mask)
 
@@ -761,14 +845,14 @@ def gen_fillrate_outbound(
 
         inbound_color_kernel = cv2.getStructuringElement(
             cv2.MORPH_RECT,
-            (7, 7)
+            (5, 5)
         )
 
         color_cargo_mask = cv2.morphologyEx(
             color_cargo_mask,
             cv2.MORPH_CLOSE,
             inbound_color_kernel,
-            iterations=2
+            iterations=1
         )
 
         color_cargo_mask = cv2.dilate(
@@ -898,7 +982,7 @@ def gen_fillrate_outbound(
 
         aspect_ratio = w_box / float(h_box)
 
-        if 0.20 <= aspect_ratio <= 6.50:
+        if 0.20 <= aspect_ratio <= 8.50:
             cv2.drawContours(
                 filtered_mask,
                 [cnt],
