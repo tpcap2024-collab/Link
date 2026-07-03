@@ -19,7 +19,6 @@ APP_ID = "5ebec09a-62dd-4fa9-8f14-830fb104518f"
 ACCESS_KEY = "V2-2ZX8p-jmYBx-bH09l-nFTYW-cvV8W-7wNy3-zqOQQ-JvMrp"
 TABLE_NAME = "Data TFR"
 
-
 # =========================
 # DEBUG CONFIG
 # =========================
@@ -28,13 +27,16 @@ os.makedirs(DEBUG_DIR, exist_ok=True)
 
 
 # =========================
-# LOCK
+# LOCK / CONFIG
 # =========================
 processed_ids = {}
 lock = threading.Lock()
 
 PROCESSED_ID_TTL_SECONDS = 10 * 60
 MAX_PROCESSED_IDS = 1000
+
+# บวกเฉพาะ Inbound +10% แต่ไม่เกิน 100%
+INBOUND_BOOST_PERCENT = 10
 
 
 def cleanup_processed_ids():
@@ -215,7 +217,6 @@ def filter_inbound_pallet_groups(mask):
 
     filtered = np.zeros_like(mask)
 
-    # ผ่อนลงเพื่อไม่ให้ตัดพาเลทที่เป็นเส้น/ช่องออกมากเกินไป
     min_area = h * w * 0.003
     max_top_y = int(h * 0.08)
 
@@ -244,11 +245,11 @@ def filter_inbound_pallet_groups(mask):
         if y > h * 0.82 and bh < h * 0.10 and bw > w * 0.20:
             continue
 
-        # ตัด object ที่อยู่ด้านบนมากและมีขนาดไม่ใหญ่พอ
+        # ตัด object ด้านบนมากและไม่ใหญ่พอ
         if y < max_top_y and area < h * w * 0.030:
             continue
 
-        # รูปทรงที่พอเป็นกลุ่มพาเลท / ตะแกรง / ลัง
+        # รูปทรงที่พอเป็นพาเลท / ตะแกรง / ลัง
         if 0.15 <= aspect <= 10.0:
             candidates.append((i, area, x, y, bw, bh))
 
@@ -294,20 +295,12 @@ def gen_fillrate_outbound(
     if img is None or img.size == 0:
         return 0
 
-    # =========================
-    # DETECT VIEW TYPE
-    # =========================
     orig_h, orig_w = img.shape[:2]
     view_type = "rear" if orig_h > orig_w else "side"
 
-    # =========================
-    # RESIZE
-    # =========================
     img = cv2.resize(img, (640, 480))
 
-    # =========================
     # SIDE VIEW 4:3 -> 16:9
-    # =========================
     if view_type == "side":
         h, w = img.shape[:2]
         target_h = int(w * 9 / 16)
@@ -330,7 +323,6 @@ def gen_fillrate_outbound(
         y2 = int(h * 0.95)
         x1 = int(w * 0.00)
         x2 = int(w * 1.00)
-
         roi = img[y1:y2, x1:x2]
 
     elif roi_mode == "inbound_right":
@@ -338,7 +330,6 @@ def gen_fillrate_outbound(
         y2 = int(h * 0.95)
         x1 = int(w * 0.00)
         x2 = int(w * 1.00)
-
         roi = img[y1:y2, x1:x2]
 
     elif view_type == "rear":
@@ -346,7 +337,6 @@ def gen_fillrate_outbound(
         y2 = int(h * 0.82)
         x1 = int(w * 0.15)
         x2 = int(w * 0.85)
-
         roi = img[y1:y2, x1:x2]
 
     else:
@@ -354,7 +344,6 @@ def gen_fillrate_outbound(
         y2 = int(h * 0.75)
         x1 = int(w * 0.15)
         x2 = int(w * 0.85)
-
         roi = img[y1:y2, x1:x2]
 
     print(
@@ -419,7 +408,6 @@ def gen_fillrate_outbound(
 
     # =========================
     # INBOUND CREAM PROTECT MASK
-    # กันพาเลท/กล่องสีครีมไม่ให้ถูกลบเป็น wall/background
     # =========================
     if roi_mode in ["inbound_left", "inbound_right"]:
 
@@ -521,7 +509,7 @@ def gen_fillrate_outbound(
             iterations=1
         )
 
-        # อย่าให้ gray wall mask ไปกินสีครีมจริง
+        # ไม่ให้ gray wall mask กินสีครีมจริง
         gray_wall_mask = cv2.bitwise_and(
             gray_wall_mask,
             cv2.bitwise_not(cream_protect_mask)
@@ -564,7 +552,6 @@ def gen_fillrate_outbound(
             4
         )
 
-        # ลดจาก 70 เหลือ 45 เพื่อไม่ให้กินกล่อง/พาเลทสีครีม
         low_sat_mask = cv2.inRange(
             s_channel,
             0,
@@ -598,7 +585,7 @@ def gen_fillrate_outbound(
             iterations=1
         )
 
-        # กันไม่ให้ background mask ลบกล่อง/พาเลทสีครีม
+        # ไม่ให้ background mask ลบสีครีมจริง
         inbound_background_mask = cv2.bitwise_and(
             inbound_background_mask,
             cv2.bitwise_not(cream_protect_mask)
@@ -780,63 +767,21 @@ def gen_fillrate_outbound(
 
         not_background_mask = cv2.bitwise_not(inbound_background_mask)
 
-        green_mask = cv2.bitwise_and(
-            green_mask,
-            not_background_mask
-        )
-
-        brown_mask = cv2.bitwise_and(
-            brown_mask,
-            not_background_mask
-        )
-
-        cream_mask = cv2.bitwise_and(
-            cream_mask,
-            not_background_mask
-        )
-
-        blue_mask = cv2.bitwise_and(
-            blue_mask,
-            not_background_mask
-        )
-
-        red_mask = cv2.bitwise_and(
-            red_mask,
-            not_background_mask
-        )
-
-        dark_mask = cv2.bitwise_and(
-            dark_mask,
-            not_background_mask
-        )
-
-        texture_mask = cv2.bitwise_and(
-            texture_mask,
-            not_background_mask
-        )
+        green_mask = cv2.bitwise_and(green_mask, not_background_mask)
+        brown_mask = cv2.bitwise_and(brown_mask, not_background_mask)
+        cream_mask = cv2.bitwise_and(cream_mask, not_background_mask)
+        blue_mask = cv2.bitwise_and(blue_mask, not_background_mask)
+        red_mask = cv2.bitwise_and(red_mask, not_background_mask)
+        dark_mask = cv2.bitwise_and(dark_mask, not_background_mask)
+        texture_mask = cv2.bitwise_and(texture_mask, not_background_mask)
 
     # =========================
     # COMBINE COLOR MASKS
     # =========================
-    color_cargo_mask = cv2.bitwise_or(
-        green_mask,
-        brown_mask
-    )
-
-    color_cargo_mask = cv2.bitwise_or(
-        color_cargo_mask,
-        cream_mask
-    )
-
-    color_cargo_mask = cv2.bitwise_or(
-        color_cargo_mask,
-        blue_mask
-    )
-
-    color_cargo_mask = cv2.bitwise_or(
-        color_cargo_mask,
-        red_mask
-    )
+    color_cargo_mask = cv2.bitwise_or(green_mask, brown_mask)
+    color_cargo_mask = cv2.bitwise_or(color_cargo_mask, cream_mask)
+    color_cargo_mask = cv2.bitwise_or(color_cargo_mask, blue_mask)
+    color_cargo_mask = cv2.bitwise_or(color_cargo_mask, red_mask)
 
     # =========================
     # INBOUND COLOR BOOST
@@ -900,20 +845,9 @@ def gen_fillrate_outbound(
     # =========================
     # COMBINE CARGO
     # =========================
-    cargo_mask = cv2.bitwise_or(
-        color_cargo_mask,
-        dark_mask
-    )
-
-    cargo_mask = cv2.bitwise_or(
-        cargo_mask,
-        texture_mask
-    )
-
-    cargo_mask = cv2.bitwise_and(
-        cargo_mask,
-        container_mask
-    )
+    cargo_mask = cv2.bitwise_or(color_cargo_mask, dark_mask)
+    cargo_mask = cv2.bitwise_or(cargo_mask, texture_mask)
+    cargo_mask = cv2.bitwise_and(cargo_mask, container_mask)
 
     if roi_mode in ["inbound_left", "inbound_right"]:
         cargo_mask = cv2.bitwise_and(
@@ -1002,16 +936,8 @@ def gen_fillrate_outbound(
         print("WARNING: cargo over-detected, fallback to color only")
 
         cargo_mask = color_cargo_mask.copy()
-
-        cargo_mask = cv2.bitwise_or(
-            cargo_mask,
-            dark_mask
-        )
-
-        cargo_mask = cv2.bitwise_and(
-            cargo_mask,
-            container_mask
-        )
+        cargo_mask = cv2.bitwise_or(cargo_mask, dark_mask)
+        cargo_mask = cv2.bitwise_and(cargo_mask, container_mask)
 
         if roi_mode in ["inbound_left", "inbound_right"]:
             cargo_mask = cv2.bitwise_and(
@@ -1083,21 +1009,8 @@ def gen_fillrate_outbound(
     filled_ratio = cargo_score / container_score
     empty_ratio = empty_score / container_score
 
-    filled_ratio = float(
-        np.clip(
-            filled_ratio,
-            0,
-            1
-        )
-    )
-
-    empty_ratio = float(
-        np.clip(
-            empty_ratio,
-            0,
-            1
-        )
-    )
+    filled_ratio = float(np.clip(filled_ratio, 0, 1))
+    empty_ratio = float(np.clip(empty_ratio, 0, 1))
 
     # =========================
     # CALIBRATION
@@ -1105,13 +1018,7 @@ def gen_fillrate_outbound(
     filled_volume = (filled_ratio ** 0.95) * 100
     filled_volume = filled_volume * 0.95
 
-    filled_volume = float(
-        np.clip(
-            filled_volume,
-            0,
-            100
-        )
-    )
+    filled_volume = float(np.clip(filled_volume, 0, 100))
 
     empty_volume = 100 - filled_volume
 
@@ -1142,17 +1049,8 @@ def gen_fillrate_outbound(
 
         color_layer = roi_norm.copy()
 
-        color_layer[cargo_mask > 0] = (
-            0,
-            255,
-            0
-        )
-
-        color_layer[empty_mask > 0] = (
-            255,
-            0,
-            0
-        )
+        color_layer[cargo_mask > 0] = (0, 255, 0)
+        color_layer[empty_mask > 0] = (255, 0, 0)
 
         overlay = cv2.addWeighted(
             roi_norm,
@@ -1597,6 +1495,16 @@ def predict():
                 "project": project,
                 "allowed": ["Inbound", "Outbound"]
             }), 400
+
+        print(f"VOLUME BEFORE INBOUND BOOST: {volume}%")
+
+        # =========================
+        # INBOUND BOOST ONLY
+        # บวกผลลัพธ์เพิ่ม 10% เฉพาะ Inbound แต่ไม่เกิน 100%
+        # =========================
+        if is_inbound:
+            volume = volume + INBOUND_BOOST_PERCENT
+            volume = max(0, min(100, volume))
 
         volume_text = f"{volume}%"
 
