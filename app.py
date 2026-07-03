@@ -254,7 +254,7 @@ def gen_fillrate_outbound(
         # Inbound Left: จับพื้นที่สินค้าด้านข้างรถ
         # ตัดด้านล่างที่เป็นล้อ/คาน/กันชนออก
         roi = img[
-            int(h * 0.08):int(h * 0.72),
+            int(h * 0.08):int(h * 0.75),
             int(w * 0.06):int(w * 0.96)
         ]
 
@@ -262,8 +262,8 @@ def gen_fillrate_outbound(
         # Inbound Right: จับพื้นที่สินค้าด้านข้างรถ
         # เปิดด้านซ้ายเพิ่มเล็กน้อย เพราะสินค้ามักเริ่มใกล้ขอบภาพ
         roi = img[
-            int(h * 0.08):int(h * 0.72),
-            int(w * 0.04):int(w * 0.94)
+            int(h * 0.08):int(h * 0.75),
+            int(w * 0.06):int(w * 0.96)
         ]
 
     elif view_type == "rear":
